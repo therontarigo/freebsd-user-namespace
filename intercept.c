@@ -19,12 +19,19 @@ typedef int	(*fn_open_t)	(const char *, int, mode_t);
 typedef int	(*fn_openat_t)	(int, const char *, int, mode_t);
 typedef int	(*fn_link_t)	(const char *, const char *);
 typedef int	(*fn_linkat_t)	(int, const char *, int, const char *, int);
+typedef int	(*fn_unlink_t)	(const char *);
+typedef int	(*fn_unlinkat_t)	(int, const char *, int);
 typedef int	(*fn_chdir_t)	(const char *);
 typedef int	(*fn_mknod_t)	(const char *, mode_t, dev_t);
 typedef int	(*fn_mknodat_t)	(int, const char *, mode_t, dev_t);
+typedef int	(*fn_chmod_t)	(const char *, mode_t);
+typedef int	(*fn_lchmod_t)	(const char *, mode_t);
+typedef int	(*fn_fchmodat_t)	(int, const char *, mode_t, int);
 typedef int	(*fn_chown_t)	(const char *, uid_t, gid_t);
 typedef int	(*fn_lchown_t)	(const char *, uid_t, gid_t);
 typedef int	(*fn_fchownat_t)	(int, const char *, uid_t, gid_t, int);
+typedef int	(*fn_accept_t)	(int, struct sockaddr * restrict, socklen_t * restrict);
+typedef int	(*fn_accept4_t)	(int, struct sockaddr * restrict, socklen_t * restrict, int);
 typedef int	(*fn_access_t)	(const char *, int);
 typedef int	(*fn_eaccess_t)	(const char *, int);
 typedef int	(*fn_faccessat_t)	(int, const char *, int, int);
@@ -41,6 +48,9 @@ typedef ssize_t	(*fn_readlinkat_t)	(int, const char *restrict, char *restrict, s
 typedef int	(*fn_execve_t)	(const char *, char *const [], char * const []);
 typedef int	(*fn_chroot_t)	(const char *);
 typedef int	(*fn_connect_t)	(int, const struct sockaddr *, socklen_t);
+typedef int	(*fn_connectat_t)	(int, int, const struct sockaddr *, socklen_t);
+typedef int	(*fn_bind_t)	(int, const struct sockaddr *, socklen_t);
+typedef int	(*fn_bindat_t)	(int, int, const struct sockaddr *, socklen_t);
 typedef int	(*fn_rename_t)	(const char *, const char *);
 typedef int	(*fn_renameat_t)	(int, const char *, int, const char *);
 typedef int	(*fn_mkfifo_t)	(const char *, mode_t);
@@ -51,6 +61,7 @@ typedef int	(*fn_mkdirat_t)	(int fd, const char *, mode_t);
 typedef int	(*fn_rmdir_t)	(const char *);
 typedef int	(*fn_utimes_t)	(const char *, const struct timeval *);
 typedef int	(*fn_lutimes_t)	(const char *, const struct timeval *);
+typedef int	(*fn_futimesat_t)	(int fd, const char *, const struct timeval[2]);
 typedef int	(*fn_statfs_t)	(const char *, struct statfs *);
 typedef int	(*fn_getfh_t)	(const char *, fhandle_t *);
 typedef int	(*fn_lgetfh_t)	(const char *, fhandle_t *);
@@ -61,18 +72,29 @@ typedef long	(*fn_pathconf_t)	(const char *, int);
 typedef long	(*fn_lpathconf_t)	(const char *, int);
 typedef int	(*fn_truncate_t)	(const char *, off_t);
 typedef int	(*fn_undelete_t)	(const char *);
+typedef int	(*fn_auditctl_t)	(const char *);
+typedef int	(*fn_shm_open_t)	(const char *, int, mode_t);
+typedef int	(*fn_shm_unlink_t)	(const char *);
+typedef int	(*fn_utimensat_t)	(int, const char *, const struct timespec[2], int);
 
 static struct {
 	fn_open_t	open;
 	fn_openat_t	openat;
 	fn_link_t	link;
 	fn_linkat_t	linkat;
+	fn_unlink_t	unlink;
+	fn_unlinkat_t	unlinkat;
 	fn_chdir_t	chdir;
 	fn_mknod_t	mknod;
 	fn_mknodat_t	mknodat;
+	fn_chmod_t	chmod;
+	fn_lchmod_t	lchmod;
+	fn_fchmodat_t	fchmodat;
 	fn_chown_t	chown;
 	fn_lchown_t	lchown;
 	fn_fchownat_t	fchownat;
+	fn_accept_t	accept;
+	fn_accept4_t	accept4;
 	fn_access_t	access;
 	fn_eaccess_t	eaccess;
 	fn_faccessat_t	faccessat;
@@ -89,6 +111,9 @@ static struct {
 	fn_execve_t	execve;
 	fn_chroot_t	chroot;
 	fn_connect_t	connect;
+	fn_connectat_t	connectat;
+	fn_bind_t	bind;
+	fn_bindat_t	bindat;
 	fn_rename_t	rename;
 	fn_renameat_t	renameat;
 	fn_mkfifo_t	mkfifo;
@@ -99,6 +124,7 @@ static struct {
 	fn_rmdir_t	rmdir;
 	fn_utimes_t	utimes;
 	fn_lutimes_t	lutimes;
+	fn_futimesat_t	futimesat;
 	fn_statfs_t	statfs;
 	fn_getfh_t	getfh;
 	fn_lgetfh_t	lgetfh;
@@ -109,6 +135,10 @@ static struct {
 	fn_lpathconf_t	lpathconf;
 	fn_truncate_t	truncate;
 	fn_undelete_t	undelete;
+	fn_auditctl_t	auditctl;
+	fn_shm_open_t	shm_open;
+	fn_shm_unlink_t	shm_unlink;
+	fn_utimensat_t	utimensat;
 
 } fntable = {0};
 
@@ -136,13 +166,19 @@ static void init() {
 	FINDSYM(openat, __sys_openat)
 	FINDSYM(link, __sys_link)
 	FINDSYM(linkat,linkat)
+	FINDSYM(unlink,unlink)
+	FINDSYM(unlinkat,unlinkat)
 	FINDSYM(chdir,__sys_chdir)
 	FINDSYM(mknod,mknod)
 	FINDSYM(mknodat,mknodat)
+	FINDSYM(chmod,chmod)
+	FINDSYM(lchmod,lchmod)
+	FINDSYM(fchmodat,fchmodat)
 	FINDSYM(chown,__sys_chown)
 	FINDSYM(lchown,__sys_lchown)
 	FINDSYM(fchownat,fchownat)
-	FINDSYM(fchownat,fchownat)
+	FINDSYM(accept,accept)
+	FINDSYM(accept4,accept4)
 	FINDSYM(access,access)
 	FINDSYM(eaccess,eaccess)
 	FINDSYM(faccessat,faccessat)
@@ -158,6 +194,10 @@ static void init() {
 	FINDSYM(readlinkat,readlinkat)
 	FINDSYM(execve,__sys_execve)
 	FINDSYM(chroot,chroot)
+	FINDSYM(connect,connect)
+	FINDSYM(connectat,connectat)
+	FINDSYM(bind,bind)
+	FINDSYM(bindat,bindat)
 	FINDSYM(rename,rename)
 	FINDSYM(renameat,renameat)
 	FINDSYM(mkfifo,mkfifo)
@@ -168,6 +208,7 @@ static void init() {
 	FINDSYM(rmdir,rmdir)
 	FINDSYM(utimes,utimes)
 	FINDSYM(lutimes,lutimes)
+	FINDSYM(futimesat,futimesat)
 	FINDSYM(statfs,statfs)
 	FINDSYM(getfh,getfh)
 	FINDSYM(lgetfh,lgetfh)
@@ -178,6 +219,10 @@ static void init() {
 	FINDSYM(lpathconf,lpathconf)
 	FINDSYM(truncate,truncate)
 	FINDSYM(undelete,undelete)
+	FINDSYM(auditctl,auditctl)
+	FINDSYM(shm_open,shm_open)
+	FINDSYM(shm_unlink,shm_unlink)
+	FINDSYM(utimensat,utimensat)
 
 	#undef FINDSYM
 
@@ -258,7 +303,8 @@ __sys_openat (int fd, const char *path, int flags, ...)
 	    va_end(ap);
 	}
 	if (dbg_log_calls)
-	    fprintf(stderr, "openat(fd=%d, path=\"%s\",flags=%x)\n", fd, path, flags);
+	    fprintf(stderr, "openat(fd=%d, path=\"%s\",flags=%x)\n",
+		fd, path, flags);
 	return fntable.openat(fd,path,flags,mode);
 }
 
@@ -266,7 +312,8 @@ int
 __sys_link(const char *name1, const char *name2)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "link(name1=\"%s\", name2=\"%s\")\n", name1, name2);
+	    fprintf(stderr, "link(name1=\"%s\", name2=\"%s\")\n",
+		name1, name2);
 	return fntable.link(name1, name2);
 }
 
@@ -278,9 +325,28 @@ linkat(int fd1, const char *name1, int fd2, const char *name2, int flag)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr,
-	      "linkat(fd1=%d, name1=\"%s\", fd2=%d, name2=\"%s\", flag=%x)\n",
-	      fd1, name1, fd2, name2, flag);
+	        "linkat(fd1=%d, name1=\"%s\", fd2=%d, name2=\"%s\", flag=%x)\n"
+		, fd1, name1, fd2, name2, flag);
 	return fntable.linkat(fd1, name1, fd2, name2, flag);
+}
+
+// unlink is used internally by libc
+//   (bt_open, hash_page, sem_new, tmpfile, remove)
+int
+unlink(const char *path)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "unlink(\"%s\")\n", path);
+	return fntable.unlink(path);
+}
+
+// unlinkat is not used by libc
+int
+unlinkat(int fd, const char *path, int flag)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "unlink(%d, \"%s\", flag=%x)\n", fd, path, flag);
+	return fntable.unlinkat(fd, path, flag);
 }
 
 int
@@ -308,6 +374,34 @@ mknodat(int fd, const char *path, mode_t mode, dev_t dev)
 	    fprintf(stderr, "mknodat(fd=%d, path=\"%s\", mode=%x, dev=%lx)\n",
 	      fd, path, mode, dev);
 	return fntable.mknodat(fd, path, mode, dev);
+}
+
+// chmod is not used by libc
+int
+chmod(const char *path, mode_t mode)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "chown(\"%s\", mode=%x)\n", path, mode);
+	return fntable.chmod(path, mode);
+}
+
+// lchmod is not used by libc
+int
+lchmod(const char *path, mode_t mode)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "lchown(\"%s\", mode=%x)\n", path, mode);
+	return fntable.lchmod(path, mode);
+}
+
+// fchmodat is not used by libc
+int
+fchmodat(int fd, const char *path, mode_t mode, int flag)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "fchmodat(%d, \"%s\", mode=%x, flag=%x)\n",
+		fd, path, mode, flag);
+	return fntable.fchmodat(fd, path, mode, flag);
 }
 
 // chown is not used by libc
@@ -361,6 +455,29 @@ nmount(struct iovec *iov, u_int niov, int flags)
 {
 	fprintf(stderr, "fatal: use of nmount(\n");
 	exit(-1);
+}
+
+// accept is not used by libc
+int
+accept(int s, struct sockaddr * restrict addr, socklen_t * restrict addrlen)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "accept(...)\n");
+	int ret = fntable.accept(s, addr, addrlen);
+	// need to rewrite sockaddr if it contains a path
+	return ret;
+}
+
+// accept4 is not used by libc
+int
+accept4(int s, struct sockaddr * restrict addr, socklen_t * restrict addrlen,
+        int flags)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "accept(...)\n");
+	int ret = fntable.accept4(s, addr, addrlen, flags);
+	// need to rewrite sockaddr if it contains a path
+	return ret;
 }
 
 // access is not used by libc (?)
@@ -523,6 +640,8 @@ swapoff(const char *special)
 	exit(-1);
 }
 
+// _connect is used internally by libc
+// connect wraps the syscall through interposing table
 int
 connect(int s, const struct sockaddr *name, socklen_t namelen)
 {
@@ -530,9 +649,41 @@ connect(int s, const struct sockaddr *name, socklen_t namelen)
 	return fntable.connect(s, name, namelen);
 }
 
+// connectat is not used by libc
+int
+connectat(int fd, int s, const struct sockaddr *name, socklen_t namelen)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "connectat(...)\n");
+	return fntable.connectat(fd, s, name, namelen);
+}
+
+// _bind is used internally by libc
+// bind is normal unwrapped syscall
+int
+bind(int s, const struct sockaddr *addr, socklen_t addrlen)
+{
+	// need to rewrite paths in sockaddrs
+	return fntable.bind(s, addr, addrlen);
+}
+
+// bindat is not used by libc
+int
+bindat(int fd, int s, const struct sockaddr *addr, socklen_t addrlen)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "bindat(...)\n");
+	return fntable.bindat(fd, s, addr, addrlen);
+}
+
 // setsockopt ?
 
-// posix.1e __acl_* use file paths - will implement these later
+/*
+ * posix.1e
+ *   __acl_* use file paths - will implement these later
+ *   extattr* use file paths
+ *   mac_get_file uses file paths
+*/
 
 // rename is not used by libc
 int
@@ -609,7 +760,8 @@ rmdir(const char *path)
 }
 
 // utimes is used internally by libc (utime)
-int utimes(const char *path, const struct timeval *times)
+int
+utimes(const char *path, const struct timeval *times)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "utimes(\"%s\", ...)\n", path);
@@ -617,11 +769,21 @@ int utimes(const char *path, const struct timeval *times)
 }
 
 // lutimes is used internally by libc (utime)
-int lutimes(const char *path, const struct timeval *times)
+int
+lutimes(const char *path, const struct timeval *times)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lutimes(\"%s\", ...)\n", path);
 	return fntable.lutimes(path, times);
+}
+
+// futimesat is not used by libc
+int
+futimesat(int fd, const char *path, const struct timeval times[2])
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "futimesat(%d, \"%s\", ...)\n", fd, path);
+	return fntable.futimesat(fd, path, times);
 }
 
 // getsockname returns a sockaddr, might need to rewrite path
@@ -741,4 +903,41 @@ undelete(const char *path)
 	return fntable.undelete(path);
 }
 
+// what is nstat and who uses it?
 
+// auditctl is not used by libc
+int
+auditctl(const char *path)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "auditctl(\"%s\")\n", path);
+	return fntable.auditctl(path);
+}
+
+// shm_open is not used by libc
+int
+shm_open(const char *path, int flags, mode_t mode)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "shm_open(\"%s\", flags=%x, mode=%x)\n",
+		path, flags, mode);
+	return fntable.shm_open(path, flags, mode);
+}
+
+// shm_unlink is not used by libc
+int
+shm_unlink(const char *path, int flags, mode_t mode)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "shm_unlink(\"%s\")\n", path);
+	return fntable.shm_unlink(path);
+}
+
+// utimensat is not used by libc
+int
+utimensat(int fd, const char *path, const struct timespec times[2], int flag)
+{
+	if (dbg_log_calls)
+	    fprintf(stderr, "utimensat(%d, \"%s\", ...)\n", fd, path);
+	return fntable.utimensat(fd, path, times, flag);
+}
