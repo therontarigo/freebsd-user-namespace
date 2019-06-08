@@ -19,6 +19,8 @@ supported.
     make
     cc -o test2 test2.c
     cc -o test3 test3.c
+    # enable logging of calls
+    export INTERCEPT_LOG_CALLS=1
     # test a wild FreeBSD binary (uses fstat)
     env LD_PRELOAD=$PWD/intercept.so ls
     # test basic call interception
