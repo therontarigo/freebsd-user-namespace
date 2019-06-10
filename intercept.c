@@ -77,8 +77,10 @@ typedef int	(*fn_shm_open_t)	(const char *, int, mode_t);
 typedef int	(*fn_shm_unlink_t)	(const char *);
 typedef int	(*fn_utimensat_t)	(int, const char *, const struct timespec[2], int);
 
+typedef fn_open_t fn__open_t;
+
 static struct {
-	fn_open_t	open;
+	fn_open_t	open, _open;
 	fn_openat_t	openat;
 	fn_link_t	link;
 	fn_linkat_t	linkat;
@@ -162,7 +164,8 @@ static void init() {
 		}							\
 	    }
 
-	FINDSYM(open, __sys_open)
+	FINDSYM(_open, __sys_open)
+	FINDSYM(open, open)
 	FINDSYM(openat, __sys_openat)
 	FINDSYM(link, __sys_link)
 	FINDSYM(linkat,linkat)
@@ -231,7 +234,7 @@ static void init() {
 	// Initialize path map table
 	maptable_len=1;
 	maptable = malloc(maptable_len*sizeof(*maptable));
-	maptable[1]=(struct maptabent){"/","/"};
+	maptable[0]=(struct maptabent){"/","/"};
 }
 
 int
@@ -241,16 +244,21 @@ __sys_syscall(int number, ...)
 	exit(-1);
 }
 
-int
+/*
+ * disable, taking the chance that programs may use syscall(...) for file
+ * operations, until an appropriate mechanism for forwarding these calls to the
+ * existing wrappers is determined.
+ */
+/*int
 syscall(int number, ...)
 {
-	fprintf(stderr, "fatal: use of syscall(\n");
-	exit(-1);
-}
+	fprintf(stderr, "syscall(%d, ...)\n", number);
+}*/
 
 int
 _syscall(int number, ...)
 {
+	fprintf(stderr, "_syscall(%d, ...)\n", number);
 	fprintf(stderr, "fatal: use of _syscall(\n");
 	exit(-1);
 }
@@ -258,6 +266,7 @@ _syscall(int number, ...)
 off_t
 __syscall(quad_t number, ...)
 {
+	fprintf(stderr, "__syscall(%lu, ...)\n", number);
 	fprintf(stderr, "fatal: use of __syscall(\n");
 	exit(-1);
 }
@@ -265,6 +274,7 @@ __syscall(quad_t number, ...)
 off_t
 ___syscall(quad_t number, ...)
 {
+	fprintf(stderr, "___syscall(%lu, ...)\n", number);
 	fprintf(stderr, "fatal: use of ___syscall(\n");
 	exit(-1);
 }
@@ -277,19 +287,23 @@ __sys___syscall(quad_t number, ...)
 }
 
 // open and _open are different implementations
+// possibly open doesn't need interception because it wraps openat(...) ?
 int
 _open (const char *path, int flags, ...)
 {
+	va_list ap;
 	mode_t mode = (mode_t){0};
 	if (flags & O_CREAT) {
-	    va_list ap;
 	    va_start(ap, flags);
 	    mode = va_arg(ap, int);
 	    va_end(ap);
 	}
 	if (dbg_log_calls)
 	    fprintf(stderr, "open(path=\"%s\",flags=%x)\n", path, flags);
-	return fntable.open(path,flags,mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable._open(rpath,flags,mode);
 }
 
 int
@@ -305,7 +319,24 @@ __sys_openat (int fd, const char *path, int flags, ...)
 	if (dbg_log_calls)
 	    fprintf(stderr, "openat(fd=%d, path=\"%s\",flags=%x)\n",
 		fd, path, flags);
-	return fntable.openat(fd,path,flags,mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.openat(rfd,rpath,flags,mode);
+}
+
+int
+openat (int fd, const char *path, int flags, ...)
+{
+	mode_t mode = (mode_t){0};
+	if (flags & O_CREAT) {
+	    va_list ap;
+	    va_start(ap, flags);
+	    mode = va_arg(ap, int);
+	    va_end(ap);
+	}
+	return __sys_openat(fd, path, flags, mode);
 }
 
 int
@@ -314,7 +345,13 @@ __sys_link(const char *name1, const char *name2)
 	if (dbg_log_calls)
 	    fprintf(stderr, "link(name1=\"%s\", name2=\"%s\")\n",
 		name1, name2);
-	return fntable.link(name1, name2);
+	char pbuf1[PATH_MAX];
+	char pbuf2[PATH_MAX];
+	const char *rname1;
+	const char *rname2;
+	pathmapat(AT_FDCWD, name1, NULL, pbuf1, &rname1);
+	pathmapat(AT_FDCWD, name2, NULL, pbuf2, &rname2);
+	return fntable.link(rname1, rname2);
 }
 
 // q: why is there only linkat and no __sys_linkat ?
@@ -327,7 +364,14 @@ linkat(int fd1, const char *name1, int fd2, const char *name2, int flag)
 	    fprintf(stderr,
 	        "linkat(fd1=%d, name1=\"%s\", fd2=%d, name2=\"%s\", flag=%x)\n"
 		, fd1, name1, fd2, name2, flag);
-	return fntable.linkat(fd1, name1, fd2, name2, flag);
+	char pbuf1[PATH_MAX];
+	char pbuf2[PATH_MAX];
+	const char *rname1;
+	const char *rname2;
+	int rfd1, rfd2;
+	pathmapat(fd1, name1, &rfd1, pbuf1, &rname1);
+	pathmapat(fd2, name2, &rfd2, pbuf2, &rname2);
+	return fntable.linkat(rfd1, rname1, rfd2, rname2, flag);
 }
 
 // unlink is used internally by libc
@@ -337,7 +381,10 @@ unlink(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "unlink(\"%s\")\n", path);
-	return fntable.unlink(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.unlink(rpath);
 }
 
 // unlinkat is not used by libc
@@ -346,7 +393,11 @@ unlinkat(int fd, const char *path, int flag)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "unlink(%d, \"%s\", flag=%x)\n", fd, path, flag);
-	return fntable.unlinkat(fd, path, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.unlinkat(rfd, rpath, flag);
 }
 
 int
@@ -354,8 +405,13 @@ chdir(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "chdir(\"%s\")\n", path);
-	return fntable.chdir(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.chdir(rpath);
 }
+
+// might need to know about fchdir
 
 // mknod is wrapper for __sys_mknodat
 // mknod is not a syscall on fbsd12+
@@ -363,8 +419,12 @@ int
 mknod(const char *path, mode_t mode, dev_t dev)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "mknod(\"%s\", mode=%x, dev=%lx)\n", path, mode, dev);
-	return fntable.mknod(path, mode, dev);
+	    fprintf(stderr, "mknod(\"%s\", mode=%x, dev=%lx)\n",
+		path, mode, dev);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.mknod(rpath, mode, dev);
 }
 
 int
@@ -373,7 +433,11 @@ mknodat(int fd, const char *path, mode_t mode, dev_t dev)
 	if (dbg_log_calls)
 	    fprintf(stderr, "mknodat(fd=%d, path=\"%s\", mode=%x, dev=%lx)\n",
 	      fd, path, mode, dev);
-	return fntable.mknodat(fd, path, mode, dev);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.mknodat(fd, rpath, mode, dev);
 }
 
 // chmod is not used by libc
@@ -382,7 +446,10 @@ chmod(const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "chown(\"%s\", mode=%x)\n", path, mode);
-	return fntable.chmod(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.chmod(rpath, mode);
 }
 
 // lchmod is not used by libc
@@ -391,7 +458,10 @@ lchmod(const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lchown(\"%s\", mode=%x)\n", path, mode);
-	return fntable.lchmod(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lchmod(rpath, mode);
 }
 
 // fchmodat is not used by libc
@@ -401,7 +471,11 @@ fchmodat(int fd, const char *path, mode_t mode, int flag)
 	if (dbg_log_calls)
 	    fprintf(stderr, "fchmodat(%d, \"%s\", mode=%x, flag=%x)\n",
 		fd, path, mode, flag);
-	return fntable.fchmodat(fd, path, mode, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.fchmodat(rfd, rpath, mode, flag);
 }
 
 // chown is not used by libc
@@ -409,8 +483,12 @@ int
 chown(const char *path, uid_t owner, gid_t group)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "chown(\"%s\", owner=%x, group=%x)\n", path, owner, group);
-	return fntable.chown(path, owner, group);
+	    fprintf(stderr, "chown(\"%s\", owner=%x, group=%x)\n",
+		path, owner, group);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.chown(rpath, owner, group);
 }
 
 // lchown is not used by libc
@@ -418,8 +496,12 @@ int
 lchown(const char *path, uid_t owner, gid_t group)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "lchown(\"%s\", owner=%x, group=%x)\n", path, owner, group);
-	return fntable.lchown(path, owner, group);
+	    fprintf(stderr, "lchown(\"%s\", owner=%x, group=%x)\n",
+		path, owner, group);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lchown(rpath, owner, group);
 }
 
 // fchownat is not used by libc
@@ -430,7 +512,11 @@ fchownat(int fd, const char *path, uid_t owner, gid_t group, int flag)
 	    fprintf(stderr,
 	      "fchownat(fd=%d, path=\"%s\", owner=%x, group=%x, flag=%x)\n",
 	      fd, path, owner, group, flag);
-	return fntable.fchownat(fd, path, owner, group, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.fchownat(rfd, rpath, owner, group, flag);
 }
 
 // mount should not be used
@@ -486,7 +572,10 @@ access(const char *path, int mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "access(\"%s\", mode=%x)\n", path, mode);
-	return fntable.access(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.access(rpath, mode);
 }
 
 // eaccess is not used by libc
@@ -495,7 +584,10 @@ eaccess(const char *path, int mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "eaccess(\"%s\", mode=%x)\n", path, mode);
-	return fntable.eaccess(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.eaccess(rpath, mode);
 }
 
 // faccessat is not used by libc
@@ -504,7 +596,11 @@ int faccessat(int fd, const char *path, int mode, int flag)
 	if (dbg_log_calls)
 	    fprintf(stderr, "faccessat(fd=%d, \"%s\", mode=%x, flag=%x)\n",
 	      fd, path, mode, flag);
-	return fntable.faccessat(fd, path, mode, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.faccessat(rfd, rpath, mode, flag);
 }
 
 // *chflags* are not usd by libc
@@ -513,7 +609,10 @@ chflags(const char *path, unsigned long flags)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "chflags(\"%s\", flags=%lu)\n", path, flags);
-	return fntable.chflags(path, flags);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.chflags(rpath, flags);
 }
 
 int
@@ -521,7 +620,10 @@ lchflags(const char *path, unsigned long flags)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lchflags(\"%s\", flags=%lu)\n", path, flags);
-	return fntable.lchflags(path, flags);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lchflags(rpath, flags);
 }
 
 int
@@ -530,7 +632,11 @@ chflagsat(int fd, const char *path, unsigned long flags, int atflag)
 	if (dbg_log_calls)
 	    fprintf(stderr, "lchflags(fd=%d, \"%s\", flags=%lu), atflag=%x\n",
 	      fd, path, flags, atflag);
-	return fntable.chflagsat(fd, path, flags, atflag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.chflagsat(rfd, rpath, flags, atflag);
 }
 
 // ktrace is not used by libc
@@ -538,9 +644,13 @@ int
 ktrace(const char *tracefile, int ops, int trpoints, int pid)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "ktrace(tracefile=\"%s\", ops=%d, trpoints=%x, pid=%d)\n",
-	      tracefile, ops, trpoints, pid);
-	return fntable.ktrace(tracefile, ops, trpoints, pid);
+	    fprintf(stderr,
+		"ktrace(tracefile=\"%s\", ops=%d, trpoints=%x, pid=%d)\n",
+		tracefile, ops, trpoints, pid);
+	char pbuf[PATH_MAX];
+	const char *res_tracefile;
+	pathmapat(AT_FDCWD, tracefile, NULL, pbuf, &res_tracefile);
+	return fntable.ktrace(res_tracefile, ops, trpoints, pid);
 }
 
 // acct is not used by libc
@@ -549,7 +659,10 @@ acct(const char *file)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "acct(\"%s\")\n", file);
-	return fntable.acct(file);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, file, NULL, pbuf, &rpath);
+	return fntable.acct(rpath);
 }
 
 // is ioctl needed?
@@ -560,7 +673,10 @@ revoke(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "revoke(\"%s\")\n", path);
-	return fntable.revoke(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.revoke(rpath);
 }
 
 // symlink* are not used by libc
@@ -569,17 +685,26 @@ int
 symlink(const char *name1, const char *name2)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "symlink(target=\"%s\", linkfile=\"%s\")\n", name1, name2);
-	return fntable.symlink(name1, name2);
+	    fprintf(stderr, "symlink(target=\"%s\", linkfile=\"%s\")\n",
+		name1, name2);
+	char pbuf[PATH_MAX];
+	const char *rname2;
+	pathmapat(AT_FDCWD, name2, NULL, pbuf, &rname2);
+	return fntable.symlink(name1, rname2);
 }
 
 int
 symlinkat(const char *name1, int fd, const char *name2)
 {
 	if (dbg_log_calls)
-	    fprintf(stderr, "symlinkat(target=\"%s\", fd=%d, linkfile=\"%s\")\n",
-	      name1, fd, name2);
-	return fntable.symlinkat(name1, fd, name2);
+	    fprintf(stderr,
+		"symlinkat(target=\"%s\", fd=%d, linkfile=\"%s\")\n",
+		name1, fd, name2);
+	char pbuf[PATH_MAX];
+	const char *rname2;
+	int rfd;
+	pathmapat(fd, name2, &rfd, pbuf, &rname2);
+	return fntable.symlinkat(name1, rfd, rname2);
 }
 
 // readlink is used in implementation of realpath
@@ -593,8 +718,10 @@ readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
 	// fprintf is also not working, using it might cause problems
 	if (!fntable.readlink) fntable.readlink = __sys_readlink;
 
-	return fntable.readlink(path, buf, bufsiz);
-//  return __sys_readlink(path, buf, bufsiz);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.readlink(rpath, buf, bufsiz);
 }
 
 // readlinkat is not used by libc
@@ -603,7 +730,11 @@ readlinkat(int fd, const char *restrict path, char *restrict buf, size_t bufsiz)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "readlinkat(fd=%d, \"%s\", ...)\n", fd, path);
-	return fntable.readlinkat(fd, path, buf, bufsiz);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.readlinkat(rfd, rpath, buf, bufsiz);
 }
 
 // execve is used internally by libc (exect,  exec, popen, posix_spawn)
@@ -613,16 +744,18 @@ execve(const char *path, char *const argv[], char *const envp[])
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "execve(\"%s\", ...)\n", path);
-	return fntable.execve(path, argv, envp);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.execve(rpath, argv, envp);
 }
 
-// chroot is not used by libc
+// chroot should not be used
 int
 chroot(const char *dirname)
 {
-	if (dbg_log_calls)
-	    fprintf(stderr, "chroot(\"%s\")\n", dirname);
-	return fntable.chroot(dirname);
+	fprintf(stderr, "fatal: use of chroot(\n");
+	exit(-1);
 }
 
 // swapon/swapoff should not be used
@@ -691,7 +824,13 @@ rename(const char *from, const char *to)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "rename(\"%s\", \"%s\")\n", from, to);
-	return fntable.rename(from, to);
+	char pbuf1[PATH_MAX];
+	char pbuf2[PATH_MAX];
+	const char *rfrom;
+	const char *rto;
+	pathmapat(AT_FDCWD, from, NULL, pbuf1, &rfrom);
+	pathmapat(AT_FDCWD, to, NULL, pbuf2, &rto);
+	return fntable.rename(rfrom, rto);
 }
 
 // renameat is not used by libc
@@ -700,8 +839,15 @@ renameat(int fromfd, const char *from, int tofd, const char *to)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "rename(%d, \"%s\", %d, \"%s\")\n",
-	      fromfd, from, tofd, to);
-	return fntable.renameat(fromfd, from, tofd, to);
+		fromfd, from, tofd, to);
+	char pbuf1[PATH_MAX];
+	char pbuf2[PATH_MAX];
+	const char *rfrom;
+	const char *rto;
+	int rfromfd, rtofd;
+	pathmapat(fromfd, from, &rfromfd, pbuf1, &rfrom);
+	pathmapat(tofd, to, &rtofd, pbuf2, &rto);
+	return fntable.renameat(rfromfd, rfrom, rtofd, rto);
 }
 
 // mkfifo is not used by libc
@@ -710,7 +856,10 @@ mkfifo(const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "mkfifo(\"%s\", mode=%x)\n", path, mode);
-	return fntable.mkfifo(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.mkfifo(rpath, mode);
 }
 
 // mkfifoat is not used by libc
@@ -719,7 +868,11 @@ mkfifoat(int fd, const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "mkfifoat(%d, \"%s\", mode=%x)\n", fd, path, mode);
-	return fntable.mkfifoat(fd, path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.mkfifoat(rfd, rpath, mode);
 }
 
 // sendto and _sendto are different implementations
@@ -738,7 +891,10 @@ mkdir(const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "mkdir(\"%s\", mode=%x)\n", path, mode);
-	return fntable.mkdir(path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.mkdir(rpath, mode);
 }
 
 // mkdirat is not used by libc
@@ -747,7 +903,11 @@ mkdirat(int fd, const char *path, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "mkdirat(%d, \"%s\", mode=%x)\n", fd, path, mode);
-	return fntable.mkdirat(fd, path, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.mkdirat(rfd, rpath, mode);
 }
 
 // rmdir is used internally by libc (remove)
@@ -756,7 +916,10 @@ rmdir(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "rmdir(\"%s\")\n", path);
-	return fntable.rmdir(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.rmdir(rpath);
 }
 
 // utimes is used internally by libc (utime)
@@ -765,7 +928,10 @@ utimes(const char *path, const struct timeval *times)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "utimes(\"%s\", ...)\n", path);
-	return fntable.utimes(path, times);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.utimes(rpath, times);
 }
 
 // lutimes is used internally by libc (utime)
@@ -774,7 +940,10 @@ lutimes(const char *path, const struct timeval *times)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lutimes(\"%s\", ...)\n", path);
-	return fntable.lutimes(path, times);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lutimes(rpath, times);
 }
 
 // futimesat is not used by libc
@@ -783,7 +952,11 @@ futimesat(int fd, const char *path, const struct timeval times[2])
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "futimesat(%d, \"%s\", ...)\n", fd, path);
-	return fntable.futimesat(fd, path, times);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.futimesat(rfd, rpath, times);
 }
 
 // getsockname returns a sockaddr, might need to rewrite path
@@ -795,7 +968,10 @@ statfs(const char *path, struct statfs *buf)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "statfs(\"%s\", ...)\n", path);
-	return fntable.statfs(path, buf);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.statfs(rpath, buf);
 }
 
 // getfh is not used by libc
@@ -804,7 +980,10 @@ getfh(const char *path, fhandle_t *fhp)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "getfh(\"%s\", ...)\n", path);
-	return fntable.getfh(path, fhp);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.getfh(rpath, fhp);
 }
 
 // lgetfh is not used by libc
@@ -813,16 +992,19 @@ lgetfh(const char *path, fhandle_t *fhp)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lgetfh(\"%s\", ...)\n", path);
-	return fntable.lgetfh(path, fhp);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lgetfh(rpath, fhp);
 }
 
 
-int
+/*int
 sysarch(int number, void *args)
 {
 	fprintf(stderr, "fatal: use of sysarch(\n");
 	exit(-1);
-}
+}*/
 
 int
 _sysarch(int number, void *args)
@@ -846,7 +1028,10 @@ stat(const char * restrict path, struct stat * restrict sb)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "stat(\"%s\", ...)\n", path);
-	return fntable.stat(path, sb);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.stat(rpath, sb);
 }
 
 // lstat is wrapper for __sys_fstatat
@@ -855,7 +1040,10 @@ lstat(const char * restrict path, struct stat * restrict sb)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lstat(\"%s\", ...)\n", path);
-	return fntable.lstat(path, sb);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lstat(rpath, sb);
 }
 
 // fstatat is a wrapper for __sys_fstatat
@@ -864,7 +1052,11 @@ fstatat(int fd, const char *path, struct stat *buf, int flag)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "fstatat(%d, \"%s\", ...)\n", fd, path);
-	return fntable.fstatat(fd, path, buf, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.fstatat(rfd, rpath, buf, flag);
 }
 
 // pathconf is used internally by libc (sysconf, statvfs)
@@ -873,7 +1065,10 @@ pathconf(const char *path, int name)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "pathconf(\"%s\", name=%d)\n", path, name);
-	return fntable.pathconf(path, name);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.pathconf(rpath, name);
 }
 
 // lpathconf is not used by libc
@@ -882,7 +1077,10 @@ lpathconf(const char *path, int name)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "lpathconf(\"%s\", name=%d)\n", path, name);
-	return fntable.lpathconf(path, name);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.lpathconf(rpath, name);
 }
 
 // truncate is used internally by libc (pututxline)
@@ -891,7 +1089,10 @@ truncate(const char *path, off_t length)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "truncate(\"%s\", length=%ld)\n", path, length);
-	return fntable.truncate(path, length);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.truncate(rpath, length);
 }
 
 // undelete is not used by libc
@@ -900,7 +1101,10 @@ undelete(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "undelete(\"%s\")\n", path);
-	return fntable.undelete(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.undelete(rpath);
 }
 
 // what is nstat and who uses it?
@@ -911,7 +1115,10 @@ auditctl(const char *path)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "auditctl(\"%s\")\n", path);
-	return fntable.auditctl(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.auditctl(rpath);
 }
 
 // shm_open is not used by libc
@@ -921,7 +1128,10 @@ shm_open(const char *path, int flags, mode_t mode)
 	if (dbg_log_calls)
 	    fprintf(stderr, "shm_open(\"%s\", flags=%x, mode=%x)\n",
 		path, flags, mode);
-	return fntable.shm_open(path, flags, mode);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.shm_open(rpath, flags, mode);
 }
 
 // shm_unlink is not used by libc
@@ -930,7 +1140,10 @@ shm_unlink(const char *path, int flags, mode_t mode)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "shm_unlink(\"%s\")\n", path);
-	return fntable.shm_unlink(path);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.shm_unlink(rpath);
 }
 
 // utimensat is not used by libc
@@ -939,5 +1152,10 @@ utimensat(int fd, const char *path, const struct timespec times[2], int flag)
 {
 	if (dbg_log_calls)
 	    fprintf(stderr, "utimensat(%d, \"%s\", ...)\n", fd, path);
-	return fntable.utimensat(fd, path, times, flag);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	int rfd;
+	pathmapat(fd, path, &rfd, pbuf, &rpath);
+	return fntable.utimensat(rfd, rpath, times, flag);
 }
+

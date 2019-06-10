@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <sys/param.h>
 
 static struct maptabent {
 	// src: location in virtual namespace
@@ -27,7 +29,10 @@ size_t maptable_len;
 	      crossing boundary of mappings
 */
 
-static char * pathmapabs (const char *path) {
+bool dbg_log_pathmap = false;
+
+void pathmapabs (const char *path, char *dstpath) {
+	dstpath[0] = '\0';
 	for (size_t i = 0; i < maptable_len; i++) {
 	    const char *src = maptable[i].src;
 	    // path cannot contain src
@@ -35,15 +40,35 @@ static char * pathmapabs (const char *path) {
 	    // path does not beigin with src
 	    if (strncmp(path,src,strlen(src))) continue;
 	    const char *dst = maptable[i].dst;
-	    char *dstpath = malloc(strlen(dst)+strlen(path)-strlen(src)+1);
+	    if (strlen(dst)+strlen(path)-strlen(src) >= PATH_MAX) return;
 	    strcpy(dstpath,dst);
 	    strcpy(dstpath+strlen(dst),path+strlen(src));
 	    dstpath[strlen(dst)+strlen(path)-strlen(src)] = '\0';
-	    fprintf(stderr, "Path \"%s\" resolved to \"%s\"\n", path, dstpath);
-	    return dstpath;
+	    if (dbg_log_pathmap)
+	        fprintf(stderr, "Path \"%s\" resolved to \"%s\"\n",
+		    path, dstpath);
+	    return;
 	}
 	fprintf(stderr, "Path \"%s\" not found in namespace\n", path);
-	// path not found
-	return NULL;
+	return;
 }
 
+// path must have capacity PATH_MAX
+static void
+pathmapat(int fd, const char *path, int *rfd, char *pbuf, const char **rpath)
+{
+	if (rfd) *rfd = fd;
+	// absolute path: map in all cases
+	// relative path: path and fd may remain unmodified by mapping,
+	//     in case it does not cross a mapping boundary
+	if (!path || (fd!=-100 && fd<=0)) {
+	    *rpath = NULL;
+	    return;
+	}
+	if (path[0]=='/') {
+	    pathmapabs(path, pbuf);
+	    *rpath = pbuf;
+	    return;
+	}
+	*rpath = path;
+}
