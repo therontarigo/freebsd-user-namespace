@@ -21,6 +21,9 @@ supported.
     cc -o test3 test3.c
     # enable logging of calls
     export INTERCEPT_LOG_CALLS=1
+    export INTERCEPT_DBGLOGFILE=/dev/stderr
+    # Map /usr/local to /tmp and / to /
+    export FILEPATHMAP=/usr/local%/tmp:/%/
     # test a wild FreeBSD binary (uses fstat)
     env LD_PRELOAD=$PWD/intercept.so ls
     # test basic call interception

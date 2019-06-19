@@ -44,12 +44,12 @@ void pathmapabs (const char *path, char *dstpath) {
 	    strcpy(dstpath,dst);
 	    strcpy(dstpath+strlen(dst),path+strlen(src));
 	    dstpath[strlen(dst)+strlen(path)-strlen(src)] = '\0';
-	    if (dbg_log_pathmap)
-	        fprintf(stderr, "Path \"%s\" resolved to \"%s\"\n",
+	    if (dbg_out && dbg_log_pathmap)
+	        fprintf(dbg_out, "Path \"%s\" resolved to \"%s\"\n",
 		    path, dstpath);
 	    return;
 	}
-	fprintf(stderr, "Path \"%s\" not found in namespace\n", path);
+	if (dbg_out) fprintf(dbg_out, "Path \"%s\" not found in namespace\n", path);
 	return;
 }
 
