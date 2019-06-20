@@ -155,20 +155,25 @@ __sys_readlink(const char *restrict path, char *restrict buf, size_t bufsiz);
 int
 __sys_open (const char *path, int flags, ...);
 
-__attribute__((constructor))
-static void init() {
-
+void
+dbg_openlog() {
 	char *dbg_log_filepath = getenv("INTERCEPT_DBGLOGFILE");
 	if (dbg_log_filepath) {
-	    int fd = __sys_open(dbg_log_filepath, O_CREAT|O_APPEND);
+	    int fd = __sys_open(dbg_log_filepath,
+		O_WRONLY|O_CREAT|O_APPEND, 0660);
 	    if (-1==fd) {
-		fprintf(stderr, "Failed to open INTERCEPT_DBGLOGFILE \"%s\": %s\n", dbg_log_filepath, strerror(errno));
+		fprintf(stderr, "Failed to open INTERCEPT_DBGLOGFILE \"%s\":"
+		    "%s\n", dbg_log_filepath, strerror(errno));
 	    }
 	    dbg_out = fdopen(fd, "a");
 	}
+}
+
+
+__attribute__((constructor))
+static void init() {
 
 	void *libc = dlopen("/lib/libc.so.7", RTLD_NOW);
-	if (dbg_out) fprintf(dbg_out, "Opened libc at %p\n", libc);
 
 	#define FINDSYM(name,sym)					\
 	    {								\
@@ -244,6 +249,7 @@ static void init() {
 
 	#undef FINDSYM
 
+	dbg_openlog();
 	dbg_log_calls=(NULL!=getenv("INTERCEPT_LOG_CALLS"));
 
 	maptable_len=0;
