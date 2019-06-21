@@ -1,2 +1,2 @@
 intercept.so: intercept.c
-	cc -shared -fPIC -o ${.TARGET} intercept.c -Wall -Werror -Wno-error=unused-function
+	cc -g -O0 -shared -fPIC -o ${.TARGET} intercept.c -Wall -Werror -Wno-error=unused-function
