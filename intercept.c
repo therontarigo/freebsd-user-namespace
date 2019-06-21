@@ -145,6 +145,7 @@ static struct {
 } fntable = {0};
 
 bool dbg_log_calls = false;
+bool dbg_out_flush = true;
 FILE *dbg_out = NULL;
 
 #include "pathmap.h"
@@ -169,6 +170,10 @@ dbg_openlog() {
 	}
 }
 
+#define DBG_LOGCALL(...) \
+	if (dbg_out && dbg_log_calls) { \
+	    fprintf(dbg_out, __VA_ARGS__); \
+	    if (dbg_out_flush) fflush(dbg_out); } \
 
 __attribute__((constructor))
 static void init() {
@@ -251,6 +256,7 @@ static void init() {
 
 	dbg_openlog();
 	dbg_log_calls=(NULL!=getenv("INTERCEPT_LOG_CALLS"));
+	dbg_log_pathmap=(NULL!=getenv("INTERCEPT_LOG_PATHMAP"));
 
 	maptable_len=0;
 	maptable = NULL;
@@ -299,13 +305,13 @@ __sys_syscall(int number, ...)
 /*int
 syscall(int number, ...)
 {
-	fprintf(dbg_out, "syscall(%d, ...)\n", number);
+	fprintf(stderr, "syscall(%d, ...)\n", number);
 }*/
 
 int
 _syscall(int number, ...)
 {
-	fprintf(dbg_out, "_syscall(%d, ...)\n", number);
+	DBG_LOGCALL("_syscall(%d, ...)\n", number);
 	fprintf(stderr, "fatal: use of _syscall(\n");
 	exit(-1);
 }
@@ -313,7 +319,7 @@ _syscall(int number, ...)
 off_t
 __syscall(quad_t number, ...)
 {
-	fprintf(dbg_out, "__syscall(%lu, ...)\n", number);
+	DBG_LOGCALL("__syscall(%lu, ...)\n", number);
 	fprintf(stderr, "fatal: use of __syscall(\n");
 	exit(-1);
 }
@@ -321,7 +327,7 @@ __syscall(quad_t number, ...)
 off_t
 ___syscall(quad_t number, ...)
 {
-	fprintf(dbg_out, "___syscall(%lu, ...)\n", number);
+	DBG_LOGCALL("___syscall(%lu, ...)\n", number);
 	fprintf(stderr, "fatal: use of ___syscall(\n");
 	exit(-1);
 }
@@ -329,8 +335,25 @@ ___syscall(quad_t number, ...)
 off_t
 __sys___syscall(quad_t number, ...)
 {
-	fprintf(dbg_out, "fatal: use of __sys___syscall(\n");
+	fprintf(stderr, "fatal: use of __sys___syscall(\n");
 	exit(-1);
+}
+
+int
+open (const char *path, int flags, ...)
+{
+	va_list ap;
+	mode_t mode = (mode_t){0};
+	if (flags & O_CREAT) {
+	    va_start(ap, flags);
+	    mode = va_arg(ap, int);
+	    va_end(ap);
+	}
+	DBG_LOGCALL("open(path=\"%s\",flags=%x)\n", path, flags);
+	char pbuf[PATH_MAX];
+	const char *rpath;
+	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
+	return fntable.open(rpath,flags,mode);
 }
 
 // open and _open are different implementations
@@ -345,8 +368,7 @@ _open (const char *path, int flags, ...)
 	    mode = va_arg(ap, int);
 	    va_end(ap);
 	}
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "open(path=\"%s\",flags=%x)\n", path, flags);
+	DBG_LOGCALL("open(path=\"%s\",flags=%x)\n", path, flags);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -363,9 +385,7 @@ __sys_openat (int fd, const char *path, int flags, ...)
 	    mode = va_arg(ap, int);
 	    va_end(ap);
 	}
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "openat(fd=%d, path=\"%s\",flags=%x)\n",
-		fd, path, flags);
+	DBG_LOGCALL("openat(fd=%d, path=\"%s\",flags=%x)\n", fd, path, flags);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -387,11 +407,22 @@ openat (int fd, const char *path, int flags, ...)
 }
 
 int
+_openat (int fd, const char *path, int flags, ...)
+{
+	mode_t mode = (mode_t){0};
+	if (flags & O_CREAT) {
+	    va_list ap;
+	    va_start(ap, flags);
+	    mode = va_arg(ap, int);
+	    va_end(ap);
+	}
+	return __sys_openat(fd, path, flags, mode);
+}
+
+int
 __sys_link(const char *name1, const char *name2)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "link(name1=\"%s\", name2=\"%s\")\n",
-		name1, name2);
+	DBG_LOGCALL("link(name1=\"%s\", name2=\"%s\")\n", name1, name2);
 	char pbuf1[PATH_MAX];
 	char pbuf2[PATH_MAX];
 	const char *rname1;
@@ -407,10 +438,9 @@ __sys_link(const char *name1, const char *name2)
 int
 linkat(int fd1, const char *name1, int fd2, const char *name2, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out,
-	        "linkat(fd1=%d, name1=\"%s\", fd2=%d, name2=\"%s\", flag=%x)\n"
-		, fd1, name1, fd2, name2, flag);
+	DBG_LOGCALL(
+	    "linkat(fd1=%d, name1=\"%s\", fd2=%d, name2=\"%s\", flag=%x)\n",
+	    fd1, name1, fd2, name2, flag);
 	char pbuf1[PATH_MAX];
 	char pbuf2[PATH_MAX];
 	const char *rname1;
@@ -426,8 +456,7 @@ linkat(int fd1, const char *name1, int fd2, const char *name2, int flag)
 int
 unlink(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "unlink(\"%s\")\n", path);
+	DBG_LOGCALL("unlink(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -438,8 +467,7 @@ unlink(const char *path)
 int
 unlinkat(int fd, const char *path, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "unlink(%d, \"%s\", flag=%x)\n", fd, path, flag);
+	DBG_LOGCALL("unlink(%d, \"%s\", flag=%x)\n", fd, path, flag);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -450,8 +478,7 @@ unlinkat(int fd, const char *path, int flag)
 int
 chdir(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "chdir(\"%s\")\n", path);
+	DBG_LOGCALL("chdir(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -465,9 +492,7 @@ chdir(const char *path)
 int
 mknod(const char *path, mode_t mode, dev_t dev)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mknod(\"%s\", mode=%x, dev=%lx)\n",
-		path, mode, dev);
+	DBG_LOGCALL("mknod(\"%s\", mode=%x, dev=%lx)\n", path, mode, dev);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -477,9 +502,8 @@ mknod(const char *path, mode_t mode, dev_t dev)
 int
 mknodat(int fd, const char *path, mode_t mode, dev_t dev)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mknodat(fd=%d, path=\"%s\", mode=%x, dev=%lx)\n",
-	      fd, path, mode, dev);
+	DBG_LOGCALL("mknodat(fd=%d, path=\"%s\", mode=%x, dev=%lx)\n",
+	    fd, path, mode, dev);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -491,8 +515,7 @@ mknodat(int fd, const char *path, mode_t mode, dev_t dev)
 int
 chmod(const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "chown(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("chown(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -503,8 +526,7 @@ chmod(const char *path, mode_t mode)
 int
 lchmod(const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lchown(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("lchown(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -515,9 +537,8 @@ lchmod(const char *path, mode_t mode)
 int
 fchmodat(int fd, const char *path, mode_t mode, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "fchmodat(%d, \"%s\", mode=%x, flag=%x)\n",
-		fd, path, mode, flag);
+	DBG_LOGCALL("fchmodat(%d, \"%s\", mode=%x, flag=%x)\n",
+	    fd, path, mode, flag);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -529,9 +550,7 @@ fchmodat(int fd, const char *path, mode_t mode, int flag)
 int
 chown(const char *path, uid_t owner, gid_t group)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "chown(\"%s\", owner=%x, group=%x)\n",
-		path, owner, group);
+	DBG_LOGCALL("chown(\"%s\", owner=%x, group=%x)\n", path, owner, group);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -542,9 +561,8 @@ chown(const char *path, uid_t owner, gid_t group)
 int
 lchown(const char *path, uid_t owner, gid_t group)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lchown(\"%s\", owner=%x, group=%x)\n",
-		path, owner, group);
+	DBG_LOGCALL("lchown(\"%s\", owner=%x, group=%x)\n",
+	    path, owner, group);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -555,10 +573,9 @@ lchown(const char *path, uid_t owner, gid_t group)
 int
 fchownat(int fd, const char *path, uid_t owner, gid_t group, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out,
-	      "fchownat(fd=%d, path=\"%s\", owner=%x, group=%x, flag=%x)\n",
-	      fd, path, owner, group, flag);
+	DBG_LOGCALL(
+	    "fchownat(fd=%d, path=\"%s\", owner=%x, group=%x, flag=%x)\n",
+	    fd, path, owner, group, flag);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -570,7 +587,7 @@ fchownat(int fd, const char *path, uid_t owner, gid_t group, int flag)
 int
 mount(const char *type, const char *dir, int flags, void *data)
 {
-	fprintf(dbg_out, "fatal: use of mount(\n");
+	fprintf(stderr, "fatal: use of mount(\n");
 	exit(-1);
 }
 
@@ -578,7 +595,7 @@ mount(const char *type, const char *dir, int flags, void *data)
 int
 unmount(const char *dir, int flags)
 {
-	fprintf(dbg_out, "fatal: use of unmount(\n");
+	fprintf(stderr, "fatal: use of unmount(\n");
 	exit(-1);
 }
 
@@ -586,7 +603,7 @@ unmount(const char *dir, int flags)
 int
 nmount(struct iovec *iov, u_int niov, int flags)
 {
-	fprintf(dbg_out, "fatal: use of nmount(\n");
+	fprintf(stderr, "fatal: use of nmount(\n");
 	exit(-1);
 }
 
@@ -594,8 +611,7 @@ nmount(struct iovec *iov, u_int niov, int flags)
 int
 accept(int s, struct sockaddr * restrict addr, socklen_t * restrict addrlen)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "accept(...)\n");
+	DBG_LOGCALL("accept(...)\n");
 	int ret = fntable.accept(s, addr, addrlen);
 	// need to rewrite sockaddr if it contains a path
 	return ret;
@@ -606,8 +622,7 @@ int
 accept4(int s, struct sockaddr * restrict addr, socklen_t * restrict addrlen,
         int flags)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "accept(...)\n");
+	DBG_LOGCALL("accept(...)\n");
 	int ret = fntable.accept4(s, addr, addrlen, flags);
 	// need to rewrite sockaddr if it contains a path
 	return ret;
@@ -617,8 +632,7 @@ accept4(int s, struct sockaddr * restrict addr, socklen_t * restrict addrlen,
 int
 access(const char *path, int mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "access(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("access(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -629,8 +643,7 @@ access(const char *path, int mode)
 int
 eaccess(const char *path, int mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "eaccess(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("eaccess(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -640,9 +653,8 @@ eaccess(const char *path, int mode)
 // faccessat is not used by libc
 int faccessat(int fd, const char *path, int mode, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "faccessat(fd=%d, \"%s\", mode=%x, flag=%x)\n",
-	      fd, path, mode, flag);
+	DBG_LOGCALL("faccessat(fd=%d, \"%s\", mode=%x, flag=%x)\n",
+	    fd, path, mode, flag);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -654,8 +666,7 @@ int faccessat(int fd, const char *path, int mode, int flag)
 int
 chflags(const char *path, unsigned long flags)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "chflags(\"%s\", flags=%lu)\n", path, flags);
+	DBG_LOGCALL("chflags(\"%s\", flags=%lu)\n", path, flags);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -665,8 +676,7 @@ chflags(const char *path, unsigned long flags)
 int
 lchflags(const char *path, unsigned long flags)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lchflags(\"%s\", flags=%lu)\n", path, flags);
+	DBG_LOGCALL("lchflags(\"%s\", flags=%lu)\n", path, flags);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -676,9 +686,8 @@ lchflags(const char *path, unsigned long flags)
 int
 chflagsat(int fd, const char *path, unsigned long flags, int atflag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lchflags(fd=%d, \"%s\", flags=%lu), atflag=%x\n",
-	      fd, path, flags, atflag);
+	DBG_LOGCALL("lchflags(fd=%d, \"%s\", flags=%lu), atflag=%x\n",
+	    fd, path, flags, atflag);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -690,10 +699,8 @@ chflagsat(int fd, const char *path, unsigned long flags, int atflag)
 int
 ktrace(const char *tracefile, int ops, int trpoints, int pid)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out,
-		"ktrace(tracefile=\"%s\", ops=%d, trpoints=%x, pid=%d)\n",
-		tracefile, ops, trpoints, pid);
+	DBG_LOGCALL("ktrace(tracefile=\"%s\", ops=%d, trpoints=%x, pid=%d)\n",
+	    tracefile, ops, trpoints, pid);
 	char pbuf[PATH_MAX];
 	const char *res_tracefile;
 	pathmapat(AT_FDCWD, tracefile, NULL, pbuf, &res_tracefile);
@@ -704,8 +711,7 @@ ktrace(const char *tracefile, int ops, int trpoints, int pid)
 int
 acct(const char *file)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "acct(\"%s\")\n", file);
+	DBG_LOGCALL("acct(\"%s\")\n", file);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, file, NULL, pbuf, &rpath);
@@ -718,8 +724,7 @@ acct(const char *file)
 int
 revoke(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "revoke(\"%s\")\n", path);
+	DBG_LOGCALL("revoke(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -731,8 +736,7 @@ revoke(const char *path)
 int
 symlink(const char *name1, const char *name2)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "symlink(target=\"%s\", linkfile=\"%s\")\n",
+	DBG_LOGCALL("symlink(target=\"%s\", linkfile=\"%s\")\n",
 		name1, name2);
 	char pbuf[PATH_MAX];
 	const char *rname2;
@@ -743,10 +747,8 @@ symlink(const char *name1, const char *name2)
 int
 symlinkat(const char *name1, int fd, const char *name2)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out,
-		"symlinkat(target=\"%s\", fd=%d, linkfile=\"%s\")\n",
-		name1, fd, name2);
+	DBG_LOGCALL("symlinkat(target=\"%s\", fd=%d, linkfile=\"%s\")\n",
+	    name1, fd, name2);
 	char pbuf[PATH_MAX];
 	const char *rname2;
 	int rfd;
@@ -758,8 +760,7 @@ symlinkat(const char *name1, int fd, const char *name2)
 ssize_t
 readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "readlink(\"%s\", ...)\n", path);
+	DBG_LOGCALL("readlink(\"%s\", ...)\n", path);
 
 	// readlink is needed by dynamic linker before init() is reached
 	// fprintf is also not working, using it might cause problems
@@ -775,8 +776,7 @@ readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
 ssize_t
 readlinkat(int fd, const char *restrict path, char *restrict buf, size_t bufsiz)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "readlinkat(fd=%d, \"%s\", ...)\n", fd, path);
+	DBG_LOGCALL("readlinkat(fd=%d, \"%s\", ...)\n", fd, path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -789,19 +789,24 @@ readlinkat(int fd, const char *restrict path, char *restrict buf, size_t bufsiz)
 int
 execve(const char *path, char *const argv[], char *const envp[])
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "execve(\"%s\", ...)\n", path);
+	DBG_LOGCALL("execve(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
 	return fntable.execve(rpath, argv, envp);
 }
 
+int
+_execve(const char *path, char *const argv[], char *const envp[])
+{
+	return execve(path, argv, envp);
+}
+
 // chroot should not be used
 int
 chroot(const char *dirname)
 {
-	fprintf(dbg_out, "fatal: use of chroot(\n");
+	fprintf(stderr, "fatal: use of chroot(\n");
 	exit(-1);
 }
 
@@ -809,14 +814,14 @@ chroot(const char *dirname)
 int
 swapon(const char *special)
 {
-	fprintf(dbg_out, "fatal: use of swapon(\n");
+	fprintf(stderr, "fatal: use of swapon(\n");
 	exit(-1);
 }
 
 int
 swapoff(const char *special)
 {
-	fprintf(dbg_out, "fatal: use of swapon(\n");
+	fprintf(stderr, "fatal: use of swapon(\n");
 	exit(-1);
 }
 
@@ -833,8 +838,7 @@ connect(int s, const struct sockaddr *name, socklen_t namelen)
 int
 connectat(int fd, int s, const struct sockaddr *name, socklen_t namelen)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "connectat(...)\n");
+	DBG_LOGCALL("connectat(...)\n");
 	return fntable.connectat(fd, s, name, namelen);
 }
 
@@ -851,8 +855,7 @@ bind(int s, const struct sockaddr *addr, socklen_t addrlen)
 int
 bindat(int fd, int s, const struct sockaddr *addr, socklen_t addrlen)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "bindat(...)\n");
+	DBG_LOGCALL("bindat(...)\n");
 	return fntable.bindat(fd, s, addr, addrlen);
 }
 
@@ -869,8 +872,7 @@ bindat(int fd, int s, const struct sockaddr *addr, socklen_t addrlen)
 int
 rename(const char *from, const char *to)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "rename(\"%s\", \"%s\")\n", from, to);
+	DBG_LOGCALL("rename(\"%s\", \"%s\")\n", from, to);
 	char pbuf1[PATH_MAX];
 	char pbuf2[PATH_MAX];
 	const char *rfrom;
@@ -884,9 +886,8 @@ rename(const char *from, const char *to)
 int
 renameat(int fromfd, const char *from, int tofd, const char *to)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "rename(%d, \"%s\", %d, \"%s\")\n",
-		fromfd, from, tofd, to);
+	DBG_LOGCALL("rename(%d, \"%s\", %d, \"%s\")\n",
+	    fromfd, from, tofd, to);
 	char pbuf1[PATH_MAX];
 	char pbuf2[PATH_MAX];
 	const char *rfrom;
@@ -901,8 +902,7 @@ renameat(int fromfd, const char *from, int tofd, const char *to)
 int
 mkfifo(const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mkfifo(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("mkfifo(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -913,8 +913,7 @@ mkfifo(const char *path, mode_t mode)
 int
 mkfifoat(int fd, const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mkfifoat(%d, \"%s\", mode=%x)\n", fd, path, mode);
+	DBG_LOGCALL("mkfifoat(%d, \"%s\", mode=%x)\n", fd, path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -927,8 +926,7 @@ mkfifoat(int fd, const char *path, mode_t mode)
 ssize_t
 sendto(int s, const void *msg, size_t len, int flags, const struct sockaddr *to, socklen_t tolen)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "__sys_sendto(...)\n");
+	DBG_LOGCALL("__sys_sendto(...)\n");
 	return fntable.sendto(s, msg, len, flags, to, tolen);
 }
 
@@ -936,8 +934,7 @@ sendto(int s, const void *msg, size_t len, int flags, const struct sockaddr *to,
 int
 mkdir(const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mkdir(\"%s\", mode=%x)\n", path, mode);
+	DBG_LOGCALL("mkdir(\"%s\", mode=%x)\n", path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -948,8 +945,7 @@ mkdir(const char *path, mode_t mode)
 int
 mkdirat(int fd, const char *path, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "mkdirat(%d, \"%s\", mode=%x)\n", fd, path, mode);
+	DBG_LOGCALL("mkdirat(%d, \"%s\", mode=%x)\n", fd, path, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -961,8 +957,7 @@ mkdirat(int fd, const char *path, mode_t mode)
 int
 rmdir(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "rmdir(\"%s\")\n", path);
+	DBG_LOGCALL("rmdir(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -973,8 +968,7 @@ rmdir(const char *path)
 int
 utimes(const char *path, const struct timeval *times)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "utimes(\"%s\", ...)\n", path);
+	DBG_LOGCALL("utimes(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -985,8 +979,7 @@ utimes(const char *path, const struct timeval *times)
 int
 lutimes(const char *path, const struct timeval *times)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lutimes(\"%s\", ...)\n", path);
+	DBG_LOGCALL("lutimes(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -997,8 +990,7 @@ lutimes(const char *path, const struct timeval *times)
 int
 futimesat(int fd, const char *path, const struct timeval times[2])
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "futimesat(%d, \"%s\", ...)\n", fd, path);
+	DBG_LOGCALL("futimesat(%d, \"%s\", ...)\n", fd, path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -1013,8 +1005,7 @@ futimesat(int fd, const char *path, const struct timeval times[2])
 int
 statfs(const char *path, struct statfs *buf)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "statfs(\"%s\", ...)\n", path);
+	DBG_LOGCALL("statfs(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1025,8 +1016,7 @@ statfs(const char *path, struct statfs *buf)
 int
 getfh(const char *path, fhandle_t *fhp)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "getfh(\"%s\", ...)\n", path);
+	DBG_LOGCALL("getfh(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1037,8 +1027,7 @@ getfh(const char *path, fhandle_t *fhp)
 int
 lgetfh(const char *path, fhandle_t *fhp)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lgetfh(\"%s\", ...)\n", path);
+	DBG_LOGCALL("lgetfh(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1049,21 +1038,21 @@ lgetfh(const char *path, fhandle_t *fhp)
 /*int
 sysarch(int number, void *args)
 {
-	fprintf(dbg_out, "fatal: use of sysarch(\n");
+	fprintf(stderr, "fatal: use of sysarch(\n");
 	exit(-1);
 }*/
 
 int
 _sysarch(int number, void *args)
 {
-	fprintf(dbg_out, "fatal: use of sysarch(\n");
+	fprintf(stderr, "fatal: use of sysarch(\n");
 	exit(-1);
 }
 
 int
 __sys_sysarch(int number, void *args)
 {
-	fprintf(dbg_out, "fatal: use of sysarch(\n");
+	fprintf(stderr, "fatal: use of sysarch(\n");
 	exit(-1);
 }
 
@@ -1073,8 +1062,7 @@ __sys_sysarch(int number, void *args)
 int
 stat(const char * restrict path, struct stat * restrict sb)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "stat(\"%s\", ...)\n", path);
+	DBG_LOGCALL("stat(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1085,8 +1073,7 @@ stat(const char * restrict path, struct stat * restrict sb)
 int
 lstat(const char * restrict path, struct stat * restrict sb)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lstat(\"%s\", ...)\n", path);
+	DBG_LOGCALL("lstat(\"%s\", ...)\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1097,8 +1084,7 @@ lstat(const char * restrict path, struct stat * restrict sb)
 int
 fstatat(int fd, const char *path, struct stat *buf, int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "fstatat(%d, \"%s\", ...)\n", fd, path);
+	DBG_LOGCALL("fstatat(%d, \"%s\", ...)\n", fd, path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
@@ -1110,8 +1096,7 @@ fstatat(int fd, const char *path, struct stat *buf, int flag)
 long
 pathconf(const char *path, int name)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "pathconf(\"%s\", name=%d)\n", path, name);
+	DBG_LOGCALL("pathconf(\"%s\", name=%d)\n", path, name);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1122,8 +1107,7 @@ pathconf(const char *path, int name)
 long
 lpathconf(const char *path, int name)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "lpathconf(\"%s\", name=%d)\n", path, name);
+	DBG_LOGCALL("lpathconf(\"%s\", name=%d)\n", path, name);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1134,8 +1118,7 @@ lpathconf(const char *path, int name)
 int
 truncate(const char *path, off_t length)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "truncate(\"%s\", length=%ld)\n", path, length);
+	DBG_LOGCALL("truncate(\"%s\", length=%ld)\n", path, length);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1146,8 +1129,7 @@ truncate(const char *path, off_t length)
 int
 undelete(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "undelete(\"%s\")\n", path);
+	DBG_LOGCALL("undelete(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1160,8 +1142,7 @@ undelete(const char *path)
 int
 auditctl(const char *path)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "auditctl(\"%s\")\n", path);
+	DBG_LOGCALL("auditctl(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1172,9 +1153,8 @@ auditctl(const char *path)
 int
 shm_open(const char *path, int flags, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "shm_open(\"%s\", flags=%x, mode=%x)\n",
-		path, flags, mode);
+	DBG_LOGCALL("shm_open(\"%s\", flags=%x, mode=%x)\n",
+	    path, flags, mode);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1185,8 +1165,7 @@ shm_open(const char *path, int flags, mode_t mode)
 int
 shm_unlink(const char *path, int flags, mode_t mode)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "shm_unlink(\"%s\")\n", path);
+	DBG_LOGCALL("shm_unlink(\"%s\")\n", path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
@@ -1197,8 +1176,7 @@ shm_unlink(const char *path, int flags, mode_t mode)
 int
 utimensat(int fd, const char *path, const struct timespec times[2], int flag)
 {
-	if (dbg_out && dbg_log_calls)
-	    fprintf(dbg_out, "utimensat(%d, \"%s\", ...)\n", fd, path);
+	DBG_LOGCALL("utimensat(%d, \"%s\", ...)\n", fd, path);
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	int rfd;
