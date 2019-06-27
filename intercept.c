@@ -1,8 +1,8 @@
 
 #include <stdio.h>
 #include <dlfcn.h>
-
-#include <sys/syscall.h>
+#include <sys/stat.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -10,10 +10,18 @@
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
+
+#include <sys/syscall.h>
 #include <sys/socket.h>
 #include <sys/param.h>
 #include <sys/mount.h>
 #include "/usr/src/lib/libc/include/libc_private.h" // should be removed
+
+#define shm_unlink _shm_unlink
+#include <sys/mman.h> // mprotect
+#undef shm_unlink
+
+#define MAXSHELLCMDLEN  PAGE_SIZE
 
 typedef int	(*fn_open_t)	(const char *, int, mode_t);
 typedef int	(*fn_openat_t)	(int, const char *, int, mode_t);
@@ -158,6 +166,7 @@ __sys_open (const char *path, int flags, ...);
 
 void
 dbg_openlog() {
+	dbg_out = NULL;
 	char *dbg_log_filepath = getenv("INTERCEPT_DBGLOGFILE");
 	if (dbg_log_filepath) {
 	    int fd = __sys_open(dbg_log_filepath,
@@ -165,6 +174,7 @@ dbg_openlog() {
 	    if (-1==fd) {
 		fprintf(stderr, "Failed to open INTERCEPT_DBGLOGFILE \"%s\":"
 		    "%s\n", dbg_log_filepath, strerror(errno));
+		return;
 	    }
 	    dbg_out = fdopen(fd, "a");
 	}
@@ -173,7 +183,9 @@ dbg_openlog() {
 #define DBG_LOGCALL(...) \
 	if (dbg_out && dbg_log_calls) { \
 	    fprintf(dbg_out, __VA_ARGS__); \
-	    if (dbg_out_flush) fflush(dbg_out); } \
+	    if (dbg_out_flush) fflush(dbg_out); }
+
+#include "patch_open.h"
 
 __attribute__((constructor))
 static void init() {
@@ -288,6 +300,7 @@ static void init() {
 	    if (end && *end==entsep) ++end;
 	    mapspec = end;
 	}
+	patch_open();
 }
 
 int
@@ -786,6 +799,8 @@ readlinkat(int fd, const char *restrict path, char *restrict buf, size_t bufsiz)
 
 // execve is used internally by libc (exect,  exec, popen, posix_spawn)
 // exect: execve. others: _execve
+// Need to check: the source file has #!?  Then need to exec interpreter
+//   ourselves, to rewrite interpreter path.
 int
 execve(const char *path, char *const argv[], char *const envp[])
 {
@@ -793,7 +808,66 @@ execve(const char *path, char *const argv[], char *const envp[])
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
-	return fntable.execve(rpath, argv, envp);
+	char * const *argve = argv;
+	char * *argv2 = NULL;
+	char magic[MAXSHELLCMDLEN];
+	int fd = _openat(AT_FDCWD, rpath, O_RDONLY);
+	if (fd==-1) return -1;
+	struct stat st;
+	if (fstat(fd, &st)) goto failure;
+	bool exec = false;
+	if (st.st_uid == geteuid()) {
+	    if (st.st_mode & S_IXUSR) exec = true;
+	} else if (st.st_gid ==getegid()) {
+	    if (st.st_mode & S_IXGRP) exec = true;
+	} else {
+	    if (st.st_mode & S_IXOTH) exec = true;
+	}
+	if (!exec) { errno = EACCES; goto failure; }
+	ssize_t readlen = read(fd, magic, MAXSHELLCMDLEN);
+	if (readlen<0) { errno = EIO; goto failure; }
+	if (readlen>=2 && !memcmp(magic, "#!", 2)) {
+	    char *interp = magic+2;
+	    char *endl = memchr(magic, '\n', readlen);
+	    if (!endl) { errno = ENOEXEC; goto failure; }
+	    while (isspace(*interp)) interp++;
+	    char *arg = memchr(interp, ' ', readlen);
+	    if (arg>endl) arg = NULL;
+	    *endl = 0;
+	    if (arg) { *arg = 0; arg+=1; }
+	    close(fd);
+	    pathmapat(AT_FDCWD, interp, NULL, pbuf, &rpath);
+	    fd = _openat(AT_FDCWD, rpath, O_RDONLY);
+	    if (fd==-1) return -1;
+	    // rewrite argv
+	    size_t arglen = 0;
+	    while (argv[arglen]) arglen++;
+	    if (arg) {
+	        argv2 = malloc((arglen+3)*sizeof(*argv2));
+		argv2[0] = interp;
+		argv2[1] = arg;
+		memcpy(argv2+2, argv, (arglen+1)*sizeof(*argv));
+	    } else {
+	        argv2 = malloc((arglen+2)*sizeof(*argv2));
+		argv2[0] = interp;
+		memcpy(argv2+1, argv, (arglen+1)*sizeof(*argv));
+	    }
+	    argve = argv2;
+	}
+	FILE *dbg_out_save = dbg_out;
+	// exec'd process writes to wrong fd for debug output unless dbg_out
+	// is cleared.  Why?
+	dbg_out = NULL;
+	fexecve(fd, argve, envp);
+	dbg_out = dbg_out_save;
+	int err;
+	failure:
+	    // save errno from above and restore before return
+	    err = errno;
+	    if (argv2) free(argv2);
+	    close(fd);
+	    errno = err;
+	    return -1;
 }
 
 int
