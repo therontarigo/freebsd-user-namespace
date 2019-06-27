@@ -1,0 +1,63 @@
+
+NAME
+    intercept.so
+
+SYNOPSIS
+    env LD_PRELOAD=intercept.so FILEPATHMAP=src1%dst1[:src2%dst2:...] (program)
+
+DESCRIPTION
+    intercept.so is a tool for intercepting file acceses by a dynamically
+    linked program and reinterpreting file paths according to a user-defined
+    namespace.
+
+    The namespace is constructed as a list of virtual locations (paths)
+    resolving to specified real locations on the underlying filesystem.
+
+    The namespace configuration is read form the environment variable
+    FILEPATHMAP, which must contain a colon-separated list of mappings in
+    "src%dst" format.  When (program) accesses a file path, that path is
+    checked against each mapping.  If the path is determined to be a location
+    within (src), it is rewritten to its location relative to the specified
+    (dst) instead of to (src).  If (src) does not describe a location
+    containing (path), the next mapping in FILEPATHMAP is tried.  If no
+    mappings resolve the location, a nonexistent file error is returned to
+    the program.
+
+    intercept.so works by redefining standard C library API functions as
+    wrappers which pass any path arguments through the path resolution
+    procedure before calling the real function, which in most cases is a system
+    call.
+
+OPTIONS
+    None.
+
+ENVIRONMENT
+
+    FILEPATHMAP  Required.  See above.
+
+    INTERCEPT_DBGLOGFILE  Path to a file, to which debugging output is to be
+        appended.  Example: INTERCEPT_DBGLOGFILE=/dev/stderr
+
+    INTERCEPT_LOG_CALLS  When set, all C library function calls caught will be
+        logged to the debugging output file.
+
+EXAMPLE
+    env \
+        LD_PRELOAD=intercept.so \
+        FILEPATHMAP=/usr/local%/tmp/build/usr/local:/%/ \
+        /bin/sh
+
+    Any file accesses from within the interactive shell to a location in
+    /usr/local are resolved instead to /tmp/build/usr/local, making it appear
+    as if that location is mounted on top of /usr/local.  Any accesses to
+    locations outside of /usr/local fall through to the real filesystem.
+
+BUGS
+    Relative paths are not resolved.
+
+    Interception does not work if the program is statically linked, or if its
+    dynamic linker (normally /libexec/ld-elf.so.1) does not respect LD_PRELOAD.
+
+    Interception does not catch file acceses performed through statically
+    linked libc functions, or through direct usage of system calls.
+
