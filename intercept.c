@@ -301,6 +301,10 @@ static void init() {
 	    mapspec = end;
 	}
 	patch_open();
+	// Now if rtld-elf calls our open, and open calls an unresolved
+	// function, rtld would be reentered and would hang on acquiring its
+	// own lock.  The library must be compiled with -znow linker option to
+	// avoid this.
 }
 
 int
