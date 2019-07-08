@@ -5,14 +5,6 @@
 #include <stdbool.h>
 #include <sys/param.h>
 
-static struct maptabent {
-	// src: location in virtual namespace
-	// dst: location on real filesystem
-	const char *src;
-	const char *dst;
-} * maptable;
-size_t maptable_len;
-
 	/* Expand the path to absolute using realpath.
 	     This is still a path inside the virtual namespace,
 	     since readlink is also intercepted. */
@@ -36,20 +28,41 @@ void pathmapabs (const char *path, char *dstpath) {
 	for (size_t i = 0; i < maptable_len; i++) {
 	    const char *src = maptable[i].src;
 	    // path cannot contain src
-	    if (strlen(path)<strlen(src)) continue;
-	    // path does not beigin with src
-	    if (strncmp(path,src,strlen(src))) continue;
+	    size_t src_len = strlen(src);
+	    if (src_len && src[src_len-1]=='/') src_len-=1;
+	    if (strlen(path)<src_len) continue;
+	    // path does not begin with src
+	    if (strncmp(path,src,src_len)) continue;
+	    if (!(path[src_len]==0 || path[src_len]=='/')) continue;
 	    const char *dst = maptable[i].dst;
 	    if (strlen(dst)+strlen(path)-strlen(src) >= PATH_MAX) return;
 	    strcpy(dstpath,dst);
 	    strcpy(dstpath+strlen(dst),path+strlen(src));
 	    dstpath[strlen(dst)+strlen(path)-strlen(src)] = '\0';
-	    if (dbg_out && dbg_log_pathmap)
-	        fprintf(dbg_out, "Path \"%s\" resolved to \"%s\"\n",
-		    path, dstpath);
+	    if (DBG_OUTOPEN && dbg_log_pathmap) {
+	        DBG_LOG("Path \"%s\" resolved to \"%s\"\n", path, dstpath);
+	    }
+
+	    /*
+	     * The special destination "/nonexistant" may be used to cause path
+	     * resolution to fail immediately.
+	     */
+	    if (!strcmp(dst, "/nonexistant")) break;
+
+	    /*
+	     * The special destination "/nonexistantFATAL" may be used to cause
+	     * an immediate failure of a process attempting to access a path
+	     * mapped to this destination.
+	     */
+	    if (!strcmp(dst, "/nonexistantFATAL")) {
+		DBG_LOG("Path \"%s\" not found in namespace - FATAL\n", path);
+		dprintf(2, "Path \"%s\" not found in namespace - FATAL\n",
+		  path);
+		__builtin_trap();
+	    }
 	    return;
 	}
-	if (dbg_out) fprintf(dbg_out, "Path \"%s\" not found in namespace\n", path);
+	DBG_LOG("Path \"%s\" not found in namespace\n", path);
 	return;
 }
 

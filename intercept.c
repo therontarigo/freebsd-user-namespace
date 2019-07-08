@@ -54,6 +54,7 @@ typedef int	(*fn_symlinkat_t)	(const char *, int, const char *);
 typedef ssize_t	(*fn_readlink_t)	(const char *restrict, char *restrict, size_t bufsiz);
 typedef ssize_t	(*fn_readlinkat_t)	(int, const char *restrict, char *restrict, size_t bufsiz);
 typedef int	(*fn_execve_t)	(const char *, char *const [], char * const []);
+typedef int	(*fn_fexecve_t)	(int fd, char *const [], char * const []);
 typedef int	(*fn_chroot_t)	(const char *);
 typedef int	(*fn_connect_t)	(int, const struct sockaddr *, socklen_t);
 typedef int	(*fn_connectat_t)	(int, int, const struct sockaddr *, socklen_t);
@@ -84,6 +85,9 @@ typedef int	(*fn_auditctl_t)	(const char *);
 typedef int	(*fn_shm_open_t)	(const char *, int, mode_t);
 typedef int	(*fn_shm_unlink_t)	(const char *);
 typedef int	(*fn_utimensat_t)	(int, const char *, const struct timespec[2], int);
+
+typedef pid_t	(*fn_fork_t)	(void);
+typedef int	(*fn_dprintf_t)	(int fd, const char * restrict format, ...);
 
 typedef fn_open_t fn__open_t;
 
@@ -119,6 +123,7 @@ static struct {
 	fn_readlink_t	readlink;
 	fn_readlinkat_t	readlinkat;
 	fn_execve_t	execve;
+	fn_fexecve_t	fexecve;
 	fn_chroot_t	chroot;
 	fn_connect_t	connect;
 	fn_connectat_t	connectat;
@@ -149,14 +154,14 @@ static struct {
 	fn_shm_open_t	shm_open;
 	fn_shm_unlink_t	shm_unlink;
 	fn_utimensat_t	utimensat;
-
+	fn_fork_t	fork;
 } fntable = {0};
 
-bool dbg_log_calls = false;
-bool dbg_out_flush = true;
-FILE *dbg_out = NULL;
+static bool dbg_log_calls = false;
+static int dbg_out_fd = -1;
+static char *dbg_log_filepath;
 
-#include "pathmap.h"
+#define DBG_OUTOPEN (dbg_out_fd>=0)
 
 ssize_t
 __sys_readlink(const char *restrict path, char *restrict buf, size_t bufsiz);
@@ -165,30 +170,60 @@ int
 __sys_open (const char *path, int flags, ...);
 
 void
-dbg_openlog() {
-	dbg_out = NULL;
-	char *dbg_log_filepath = getenv("INTERCEPT_DBGLOGFILE");
+dbg_openlog()
+{
+	dbg_out_fd=-1;
 	if (dbg_log_filepath) {
-	    int fd = __sys_open(dbg_log_filepath,
+	    dbg_out_fd = __sys_open(dbg_log_filepath,
 		O_WRONLY|O_CREAT|O_APPEND, 0660);
-	    if (-1==fd) {
-		fprintf(stderr, "Failed to open INTERCEPT_DBGLOGFILE \"%s\":"
-		    "%s\n", dbg_log_filepath, strerror(errno));
-		return;
-	    }
-	    dbg_out = fdopen(fd, "a");
 	}
 }
 
-#define DBG_LOGCALL(...) \
-	if (dbg_out && dbg_log_calls) { \
-	    fprintf(dbg_out, __VA_ARGS__); \
-	    if (dbg_out_flush) fflush(dbg_out); }
+void
+dbg_closelog()
+{
+	close(dbg_out_fd);
+	dbg_out_fd = -2;
+}
+
+#define DBG_LOG(...) { \
+	if (dbg_out_fd==-2) { \
+	    /* Reopen dbg output because it was closed */ \
+	    dbg_openlog(); \
+	} \
+	if (DBG_OUTOPEN) { \
+	    dprintf(dbg_out_fd, "INTERCEPT %5d: ", getpid()); \
+	    dprintf(dbg_out_fd, __VA_ARGS__); \
+	} }
+
+#define DBG_LOGCALL(...) if (dbg_log_calls) DBG_LOG(__VA_ARGS__)
+
+#include "mapspec.h"
+#include "pathmap.h"
+
+int
+_open(const char *path, int flags, ...);
 
 #include "patch_open.h"
 
 __attribute__((constructor))
-static void init() {
+static void
+intercept_doinit()
+{
+	/*
+	 * dprintf: call once such that all lazy-resolved symbols it requires
+	 * become resolved, so that a lock over rtld does not later occur.
+	 * Important: string cannot be empty
+	 */
+	dprintf(-1, " ");
+	char *dbg_log_filepath_env = getenv("INTERCEPT_DBGLOGFILE");
+	/*
+	 * Save dbg file path in case the file later needs to be reopened, as
+	 * in case of fork.  This also avoids any further getenv, which could
+	 * fail since some program such as env(1) might unset it
+	 */
+	dbg_log_filepath = malloc(strlen(dbg_log_filepath_env)+1);
+	strcpy(dbg_log_filepath, dbg_log_filepath_env);
 
 	void *libc = dlopen("/lib/libc.so.7", RTLD_NOW);
 
@@ -197,7 +232,7 @@ static void init() {
 		fntable.name = (fn_##name##_t)dlfunc(libc, #sym);	\
 		if (!fntable.name) {					\
 		    fprintf(stderr, "fatal: %s not found\n", #sym);	\
-		    exit(-1);						\
+		    _exit(-1);						\
 		}							\
 	    }
 
@@ -233,6 +268,7 @@ static void init() {
 	FINDSYM(readlink,readlink)
 	FINDSYM(readlinkat,readlinkat)
 	FINDSYM(execve,__sys_execve)
+	FINDSYM(fexecve,fexecve)
 	FINDSYM(chroot,chroot)
 	FINDSYM(connect,connect)
 	FINDSYM(connectat,connectat)
@@ -263,6 +299,7 @@ static void init() {
 	FINDSYM(shm_open,shm_open)
 	FINDSYM(shm_unlink,shm_unlink)
 	FINDSYM(utimensat,utimensat)
+	FINDSYM(fork,fork)
 
 	#undef FINDSYM
 
@@ -270,41 +307,14 @@ static void init() {
 	dbg_log_calls=(NULL!=getenv("INTERCEPT_LOG_CALLS"));
 	dbg_log_pathmap=(NULL!=getenv("INTERCEPT_LOG_PATHMAP"));
 
-	maptable_len=0;
-	maptable = NULL;
-	char *mapspec = getenv("FILEPATHMAP");
-	if (!mapspec) {
-	    fprintf(stderr, "FILEPATHMAP undefined\n");
-	    exit(-1);
-	}
-	char entsep = ':';
-	char mapsep = '%';
-	while (mapspec && *mapspec) {
-	    char *end = strchr(mapspec, entsep);
-	    if (!end) end = strchr(mapspec, '\0');
-	    char *sep = strchr(mapspec, mapsep);
-	    if (!sep || sep > end) {
-		fprintf(stderr, "Bad FILEPATHMAP: %s\n", mapspec);
-		exit(-1);
-	    }
-	    size_t len_src = sep-mapspec;
-	    size_t len_dst = end-(sep+1);
-	    char *src = malloc(len_src+1);
-	    char *dst = malloc(len_dst+1);
-	    strncpy(src, mapspec, len_src);
-	    strncpy(dst, sep+1, len_dst);
-	    src[len_src] = '\0';
-	    dst[len_dst] = '\0';
-	    maptable = realloc(maptable, (++maptable_len)*sizeof(*maptable));
-	    maptable[maptable_len-1] = (struct maptabent){src, dst};
-	    if (end && *end==entsep) ++end;
-	    mapspec = end;
-	}
+	mapspec_read();
 	patch_open();
-	// Now if rtld-elf calls our open, and open calls an unresolved
-	// function, rtld would be reentered and would hang on acquiring its
-	// own lock.  The library must be compiled with -znow linker option to
-	// avoid this.
+	/*
+	 * patch_open: Now if rtld-elf calls our open, and open calls an
+	 * unresolved function, rtld would be reentered and would hang on
+	 * acquiring its own lock.  The library must be compiled with -znow
+	 * linker option to avoid this.
+	 */
 }
 
 int
@@ -777,11 +787,13 @@ symlinkat(const char *name1, int fd, const char *name2)
 ssize_t
 readlink(const char *restrict path, char *restrict buf, size_t bufsiz)
 {
-	DBG_LOGCALL("readlink(\"%s\", ...)\n", path);
 
 	// readlink is needed by dynamic linker before init() is reached
 	// fprintf is also not working, using it might cause problems
-	if (!fntable.readlink) fntable.readlink = __sys_readlink;
+	if (!fntable.readlink)
+	    return __sys_readlink(path, buf, bufsiz);
+
+	DBG_LOGCALL("readlink(\"%s\", ...)\n", path);
 
 	char pbuf[PATH_MAX];
 	const char *rpath;
@@ -801,22 +813,66 @@ readlinkat(int fd, const char *restrict path, char *restrict buf, size_t bufsiz)
 	return fntable.readlinkat(rfd, rpath, buf, bufsiz);
 }
 
+pid_t
+fork(void)
+{
+	/*
+	 * Close outputs before fork, since some programs incl. /bin/sh make
+	 * assumptions about file descriptors which can't otherwise be met.
+	 */
+	dbg_closelog();
+	return fntable.fork();
+}
+
+int
+fexecve(int fd, char *const argv[], char *const envp[])
+{
+	return fntable.fexecve(fd, argv, envp);
+}
+
+void
+prevfork(void)
+{
+	/* Close output before vfork, as for fork */
+	dbg_closelog();
+}
+
+#include "jump_vfork.h"
+
 // execve is used internally by libc (exect,  exec, popen, posix_spawn)
 // exect: execve. others: _execve
 // Need to check: the source file has #!?  Then need to exec interpreter
 //   ourselves, to rewrite interpreter path.
+// libc: execve and _execve are same.
 int
 execve(const char *path, char *const argv[], char *const envp[])
 {
+	/* in case of exec without fork */
+	if (DBG_OUTOPEN) dbg_closelog();
+	/* now reopen output with fd which needn't be preserved */
+	dbg_openlog();
 	DBG_LOGCALL("execve(\"%s\", ...)\n", path);
+
+#ifdef INTERCEPT_DBG_EXEC_ARGS
+	for (int iarg=0; argv[iarg]; iarg++) {
+	    DBG_LOGCALL("execve:  argv[%d] = \"%s\"\n", iarg, argv[iarg]);
+	}
+#ifdef INTERCEPT_DBG_EXEC_ENV
+	for (int iarg=0; envp[iarg]; iarg++) {
+	    DBG_LOGCALL("execve:  envp[%d] = \"%s\"\n", iarg, envp[iarg]);
+	}
+#endif
+#endif
+
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
 	char * const *argve = argv;
 	char * *argv2 = NULL;
+	char *scriptpath = NULL;
 	char magic[MAXSHELLCMDLEN];
-	int fd = _openat(AT_FDCWD, rpath, O_RDONLY);
-	if (fd==-1) return -1;
+	int fd = fntable.openat(AT_FDCWD, rpath, O_RDONLY, 0);
+	if (fd==-1) goto failure;
 	struct stat st;
 	if (fstat(fd, &st)) goto failure;
 	bool exec = false;
@@ -830,46 +886,59 @@ execve(const char *path, char *const argv[], char *const envp[])
 	if (!exec) { errno = EACCES; goto failure; }
 	ssize_t readlen = read(fd, magic, MAXSHELLCMDLEN);
 	if (readlen<0) { errno = EIO; goto failure; }
-	if (readlen>=2 && !memcmp(magic, "#!", 2)) {
-	    char *interp = magic+2;
-	    char *endl = memchr(magic, '\n', readlen);
-	    if (!endl) { errno = ENOEXEC; goto failure; }
-	    while (isspace(*interp)) interp++;
-	    char *arg = memchr(interp, ' ', readlen);
-	    if (arg>endl) arg = NULL;
-	    *endl = 0;
-	    if (arg) { *arg = 0; arg+=1; }
-	    close(fd);
-	    pathmapat(AT_FDCWD, interp, NULL, pbuf, &rpath);
-	    fd = _openat(AT_FDCWD, rpath, O_RDONLY);
-	    if (fd==-1) return -1;
-	    // rewrite argv
+	/* Executable file with non-ELF header is assumed to be shell script */
+	if (readlen>0 && magic[0]<0x7f) {
+	    char *interp;
+	    char *arg;
+	    if (readlen>=2 && !memcmp(magic, "#!", 2)) {
+	        interp = magic+2;
+	        char *endl = memchr(magic, '\n', readlen);
+	        if (!endl) { errno = ENOEXEC; goto failure; }
+	        while (isspace(*interp)) interp++;
+	        arg = memchr(interp, ' ', readlen);
+	        if (arg>endl) arg = NULL;
+	        *endl = 0;
+	        if (arg) { *arg = 0; arg+=1; }
+	        close(fd);
+	        pathmapat(AT_FDCWD, interp, NULL, pbuf, &rpath);
+	    } else {
+		arg = NULL;
+		strcpy(pbuf, "/bin/sh");
+		interp = pbuf;
+		rpath = pbuf;
+	    }
+	    fd = fntable.openat(AT_FDCWD, rpath, O_RDONLY, 0);
+	    if (fd==-1) goto failure;
+	    scriptpath = malloc(strlen(path)+1);
+	    strcpy(scriptpath, path);
 	    size_t arglen = 0;
 	    while (argv[arglen]) arglen++;
 	    if (arg) {
 	        argv2 = malloc((arglen+3)*sizeof(*argv2));
 		argv2[0] = interp;
 		argv2[1] = arg;
-		memcpy(argv2+2, argv, (arglen+1)*sizeof(*argv));
+		argv2[2] = scriptpath;
+		memcpy(argv2+3, argv+1, (arglen)*sizeof(*argv));
 	    } else {
 	        argv2 = malloc((arglen+2)*sizeof(*argv2));
 		argv2[0] = interp;
-		memcpy(argv2+1, argv, (arglen+1)*sizeof(*argv));
+		argv2[1] = scriptpath;
+		memcpy(argv2+2, argv+1, (arglen)*sizeof(*argv));
 	    }
 	    argve = argv2;
 	}
-	FILE *dbg_out_save = dbg_out;
-	// exec'd process writes to wrong fd for debug output unless dbg_out
-	// is cleared.  Why?
-	dbg_out = NULL;
+
+	dbg_closelog();
 	fexecve(fd, argve, envp);
-	dbg_out = dbg_out_save;
+
 	int err;
 	failure:
 	    // save errno from above and restore before return
 	    err = errno;
 	    if (argv2) free(argv2);
+	    if (scriptpath) free(scriptpath);
 	    close(fd);
+	    dbg_closelog();
 	    errno = err;
 	    return -1;
 }
