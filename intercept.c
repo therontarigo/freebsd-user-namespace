@@ -159,7 +159,7 @@ static struct {
 
 static bool dbg_log_calls = false;
 static int dbg_out_fd = -1;
-static char *dbg_log_filepath;
+static char *dbg_log_filepath = NULL;
 
 #define DBG_OUTOPEN (dbg_out_fd>=0)
 
@@ -222,8 +222,10 @@ intercept_doinit()
 	 * in case of fork.  This also avoids any further getenv, which could
 	 * fail since some program such as env(1) might unset it
 	 */
-	dbg_log_filepath = malloc(strlen(dbg_log_filepath_env)+1);
-	strcpy(dbg_log_filepath, dbg_log_filepath_env);
+	if (dbg_log_filepath_env) {
+	    dbg_log_filepath = malloc(strlen(dbg_log_filepath_env)+1);
+	    strcpy(dbg_log_filepath, dbg_log_filepath_env);
+	}
 
 	void *libc = dlopen("/lib/libc.so.7", RTLD_NOW);
 
