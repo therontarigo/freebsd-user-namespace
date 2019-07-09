@@ -15,7 +15,6 @@
 #include <sys/socket.h>
 #include <sys/param.h>
 #include <sys/mount.h>
-#include "/usr/src/lib/libc/include/libc_private.h" // should be removed
 
 #define shm_unlink _shm_unlink
 #include <sys/mman.h> // mprotect
