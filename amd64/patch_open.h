@@ -1,4 +1,6 @@
 
+#include "ldelf_addresses.h"
+
 static void patch_jmp(void *fnaddr, void *newfn) {
 	if (fnaddr < (void *)0x0000000800000000) return; // plt
 	long jmprel = (long)(newfn-fnaddr);
@@ -32,9 +34,16 @@ static void patch_jmp(void *fnaddr, void *newfn) {
 static void patch_open() {
 	void *rtld_dlopen = (dlopen);
 	if (rtld_dlopen < (void *)0x0000000800000000) return; // plt
-	// magic numbers: offset from dlopen to open in ld-elf.so
-	void *openaddr = (rtld_dlopen) + (0x800223820 - 0x800215030);
-	patch_jmp(openaddr, _open);
-	void *openataddr = (rtld_dlopen) + (0x800223dd0 - 0x800215030);
-	patch_jmp(openataddr, openat);
+	const char *fnnames[] = { "dlopen", "open", "_openat" };
+	struct { size_t dlopen, open, _openat; } ldelf;
+	if (ldelf_addresses(3, fnnames, (size_t*)&ldelf)) return;
+	if (!ldelf.dlopen) return;
+	if (ldelf.open) {
+	    void *openaddr = (rtld_dlopen) + (ldelf.open - ldelf.dlopen);
+	    patch_jmp(openaddr, _open);
+	}
+	if (ldelf._openat) {
+	    void *openataddr = (rtld_dlopen) + (ldelf._openat - ldelf.dlopen);
+	    patch_jmp(openataddr, openat);
+	}
 }
