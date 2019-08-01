@@ -1204,29 +1204,35 @@ __sys_sysarch(int number, void *args)
 	exit(-1);
 }
 
+
+/*
+getdirentries: Need to show overlay of real fs and namespace.
+Need also a fake fd system for allowing ghost directories to be openable.
+procedure:
+  make an empty list of directory entries
+  for each path mapping:
+    look up the target in the path mapping
+    get its directory entries
+    for each entry which does is not present in the list:
+      add the entry to the list
+  return the list of directory entries.
+*/
+
 // should be intercepting *stat* family in a manner which works correctly
 // regardless of pre(i.e. freebsd11)/post ino64 changes to libc
-// stat is wrapper for __sys_fstatat
-int
-stat(const char * restrict path, struct stat * restrict sb)
-{
-	DBG_LOGCALL("stat(\"%s\", ...)\n", path);
-	char pbuf[PATH_MAX];
-	const char *rpath;
-	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
-	return fntable.stat(rpath, sb);
-}
 
-// lstat is wrapper for __sys_fstatat
-int
-lstat(const char * restrict path, struct stat * restrict sb)
-{
-	DBG_LOGCALL("lstat(\"%s\", ...)\n", path);
-	char pbuf[PATH_MAX];
-	const char *rpath;
-	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
-	return fntable.lstat(rpath, sb);
-}
+/*
+Stat procedure:
+  Map the path.
+  If the path resolves to a target which exists, stat it and return.
+  Otherwise:
+  For each path mapping entry:
+    If the path matches all but the last component of the entry:
+      Return stat structure for a directory.
+  (Don't need to check for all components matching, since that would have
+   succeeded above)
+  Otherwise: return no ent error
+*/
 
 // fstatat is a wrapper for __sys_fstatat
 int
@@ -1237,7 +1243,44 @@ fstatat(int fd, const char *path, struct stat *buf, int flag)
 	const char *rpath;
 	int rfd;
 	pathmapat(fd, path, &rfd, pbuf, &rpath);
-	return fntable.fstatat(rfd, rpath, buf, flag);
+	if (0==fntable.fstatat(rfd, rpath, buf, flag)) return 0;
+	if (errno!=ENOENT) return -1;
+	size_t path_len = strlen(path);
+        for (size_t i = 0; i <= maptable_len; i++) {
+	    if (i==maptable_len) {
+		errno = ENOENT;
+		return -1;
+	    }
+	    const char *src = maptable[i].src;
+	    if (strlen(src)<path_len) continue;
+	    if (strncmp(src, path, path_len)) continue;
+	    if (!(src[path_len]==0 || src[path_len]=='/')) continue;
+	    break;
+	}
+	memset(buf, 0, sizeof(*buf));
+	buf->st_dev = -1;
+	buf->st_ino = -1;
+	buf->st_uid = getuid();
+	buf->st_gid = getgid();
+	buf->st_mode |= S_IFDIR;
+	buf->st_mode |= S_IRUSR | S_IXUSR;
+	buf->st_mode |= S_IRGRP | S_IXGRP;
+	buf->st_mode |= S_IROTH | S_IXOTH;
+	return 0;
+}
+
+// stat is wrapper for fstatat
+int
+stat(const char * restrict path, struct stat * restrict sb)
+{
+	return fstatat(AT_FDCWD, path, sb, 0);
+}
+
+// lstat is wrapper for fstatat
+int
+lstat(const char * restrict path, struct stat * restrict sb)
+{
+	return fstatat(AT_FDCWD, path, sb, AT_SYMLINK_NOFOLLOW);
 }
 
 // pathconf is used internally by libc (sysconf, statvfs)
