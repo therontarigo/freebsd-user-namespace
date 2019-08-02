@@ -20,6 +20,11 @@
 #include <sys/mman.h> // mprotect
 #undef shm_unlink
 
+#include "userns.h"
+#include "dbglog.h"
+#include "mapspec.h"
+#include "pathmap.h"
+
 #define MAXSHELLCMDLEN  PAGE_SIZE
 
 typedef int	(*fn_open_t)	(const char *, int, mode_t);
@@ -156,49 +161,8 @@ static struct {
 	fn_fork_t	fork;
 } fntable = {0};
 
-static bool dbg_log_calls = false;
-static int dbg_out_fd = -1;
-static char *dbg_log_filepath = NULL;
-
-#define DBG_OUTOPEN (dbg_out_fd>=0)
-
 ssize_t
 __sys_readlink(const char *restrict path, char *restrict buf, size_t bufsiz);
-
-int
-__sys_open (const char *path, int flags, ...);
-
-void
-dbg_openlog()
-{
-	dbg_out_fd=-1;
-	if (dbg_log_filepath) {
-	    dbg_out_fd = __sys_open(dbg_log_filepath,
-		O_WRONLY|O_CREAT|O_APPEND, 0660);
-	}
-}
-
-void
-dbg_closelog()
-{
-	close(dbg_out_fd);
-	dbg_out_fd = -2;
-}
-
-#define DBG_LOG(...) { \
-	if (dbg_out_fd==-2) { \
-	    /* Reopen dbg output because it was closed */ \
-	    dbg_openlog(); \
-	} \
-	if (DBG_OUTOPEN) { \
-	    dprintf(dbg_out_fd, "INTERCEPT %5d: ", getpid()); \
-	    dprintf(dbg_out_fd, __VA_ARGS__); \
-	} }
-
-#define DBG_LOGCALL(...) if (dbg_log_calls) DBG_LOG(__VA_ARGS__)
-
-#include "mapspec.h"
-#include "pathmap.h"
 
 int
 _open(const char *path, int flags, ...);
