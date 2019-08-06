@@ -3,7 +3,7 @@ SRCDIR=	${.CURDIR}/..
 .PATH: ${SRCDIR}
 
 PROG=	intercept.so
-SRCS=	intercept.c pathmap.c mapspec.c dbglog.c
+SRCS=	intercept.c pathmap.c mapspec.c dbglog.c exe_runpath.c
 MAN=
 
 CFLAGS+=	-Wall -Werror

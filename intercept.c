@@ -24,6 +24,7 @@
 #include "dbglog.h"
 #include "mapspec.h"
 #include "pathmap.h"
+#include "exe_runpath.h"
 
 #define MAXSHELLCMDLEN  PAGE_SIZE
 
@@ -832,9 +833,12 @@ execve(const char *path, char *const argv[], char *const envp[])
 	char pbuf[PATH_MAX];
 	const char *rpath;
 	pathmapat(AT_FDCWD, path, NULL, pbuf, &rpath);
-	char * const *argve = argv;
+	char * const *argve = argv; /* potentially modified argv */
+	char * const *envpe = envp; /* potentially modified envp */
 	char * *argv2 = NULL;
+	char * *envp2 = NULL;
 	char *scriptpath = NULL;
+	char *libmap = NULL;
 	char magic[MAXSHELLCMDLEN];
 	int fd = fntable.openat(AT_FDCWD, rpath, O_RDONLY, 0);
 	if (fd==-1) goto failure;
@@ -851,8 +855,73 @@ execve(const char *path, char *const argv[], char *const envp[])
 	if (!exec) { errno = EACCES; goto failure; }
 	ssize_t readlen = read(fd, magic, MAXSHELLCMDLEN);
 	if (readlen<0) { errno = EIO; goto failure; }
-	/* Executable file with non-ELF header is assumed to be shell script */
-	if (readlen>0 && magic[0]<0x7f) {
+	if (readlen>0 && magic[0] >= 0x7f) {
+	    /*
+	     * Executable file with ELF magic number or greater is potentially
+	     * an ELF object; try to read it as such.
+	     */
+	    char *ldrunpath;
+	    char *ldrpath;
+	    /*
+	     * Read the ELF headers of the executable.  If it uses RUNPATH or
+	     * RPATH, translate the paths as needed and create LD_LIBMAP
+	     * mappings to handle path mappings.
+	     *
+	     * BUG: The executable may require library objects which themselves
+	     * use RUNPATH.  This case is not checked.  A proper solution would
+	     * be to recursively look up all required libraries, duplicating
+	     * much of the functionality of ld-elf.so.1.
+	     *
+	     * BUG: LD_LIBMAP is unconditionally appended to environment.  This
+	     * is not correct behavior for the case of LD_LIBMAP already
+	     * existing in the environment.
+	     *
+	     * Existing LD_LIBRARY_PATH in environment should also be handled
+	     * similarly to DT_RUNPATH.  This is not implemented.
+	     */
+	    int ret = exe_runpath(fd, &ldrunpath, &ldrpath);
+	    /* If ELF but no shared section */
+	    if (ret == EXE_RUNPATH_NOSHARED) goto nofixes;
+	    /* Otherwise invalid ELF header */
+	    if (ret != EXE_RUNPATH_SUCCESS) {
+		/*
+		 * Intercept Library is known to work only with ELF executables
+		 * (and by extension various scripting interpreters), so if
+		 * the executable file is neither, fail now rather than wait
+		 * for trouble.
+		 */
+		errno = ENOEXEC; goto failure;
+	    }
+	    if (!ldrunpath && !ldrpath) goto nofixes;
+	    const char *libmap_prefix = "LD_LIBMAP=";
+	    ssize_t libmap_end = strlen(libmap_prefix) - 1;
+	    libmap = malloc(libmap_end + 2);
+	    strcpy(libmap, libmap_prefix);
+	    for (char *pn, *p = ldrunpath; p; p = pn) {
+		/* p: path; rp: resolved path */
+		pn = strchr(p, ':');
+		if (pn) { *pn = '\0'; pn++; }
+		char pbuf[PATH_MAX];
+		const char *rp;
+	        pathmapat(AT_FDCWD, p, NULL, pbuf, &rp);
+		size_t p_len = strlen(p);
+		size_t rp_len = strlen(rp);
+		/* format: ",${p}=${rp}" -> +3 chars: ',' '=' '\0' */
+		libmap = realloc(libmap, libmap_end + p_len + rp_len + 3);
+		char *wr = libmap + libmap_end;
+		if (*wr != '=') *wr = ',';
+		wr += 1;
+		int nw = snprintf(wr, p_len + rp_len + 2, "%s=%s", p, rp);
+		if (nw > 0) libmap_end += nw;
+	    }
+	    free(ldrunpath);
+	    free(ldrpath);
+	} else /* !(magic[0] >= 0x7f) */ {
+	    /*
+	     * Magic number in printable range identifies a script.
+	     * This block is also reached for case of empty file, which is
+	     * assumed under FreeBSD to be a /bin/sh script, as is done here.
+	     */
 	    char *interp;
 	    char *arg;
 	    if (readlen>=2 && !memcmp(magic, "#!", 2)) {
@@ -892,15 +961,28 @@ execve(const char *path, char *const argv[], char *const envp[])
 	    }
 	    argve = argv2;
 	}
+	nofixes:
+
+	if (libmap) {
+	    size_t envlen = 0;
+	    while (envp[envlen]) envlen++;
+	    envp2 = malloc((envlen + 2) * sizeof(*envp2));
+	    memcpy(envp2, envp, envlen * sizeof(*envp));
+	    envp2[envlen] = libmap;
+	    envp2[envlen + 1] = NULL;
+	    envpe = envp2;
+	}
 
 	dbg_closelog();
-	fexecve(fd, argve, envp);
+	fexecve(fd, argve, envpe);
 
 	int err;
 	failure:
 	    // save errno from above and restore before return
 	    err = errno;
 	    if (argv2) free(argv2);
+	    if (envp2) free(envp2);
+	    if (libmap) free(libmap);
 	    if (scriptpath) free(scriptpath);
 	    close(fd);
 	    dbg_closelog();
