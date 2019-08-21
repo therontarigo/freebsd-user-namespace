@@ -17,16 +17,15 @@ supported.
 
 ### Demonstration Usage
     make
-    cc -o test2 test2.c
-    cc -o test3 test3.c
-    # enable logging of calls
-    export INTERCEPT_LOG_CALLS=1
+    # enable logging of path translations
+    export INTERCEPT_LOG_PATHMAP=1
     export INTERCEPT_DBGLOGFILE=/dev/stderr
     # Map /usr/local to /tmp and / to /
     export FILEPATHMAP=/usr/local%/tmp:/%/
-    # test a wild FreeBSD binary (uses fstat)
-    env LD_PRELOAD=$PWD/intercept.so ls
-    # test basic call interception
-    env LD_PRELOAD=$PWD/intercept.so ./test2
-    # test warning for unsupported superuser syscalls
-    env LD_PRELOAD=$PWD/intercept.so ./test3
+    echo hello > /tmp/foo
+    env LD_PRELOAD=$PWD/intercept/intercept.so cat /usr/local/foo
+
+A more complex namespace may be built up through adding mappings to
+FILEPATHMAP.
+
+See doc/MANUAL.txt
